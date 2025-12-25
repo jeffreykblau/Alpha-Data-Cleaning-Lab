@@ -1,1 +1,79 @@
+name: Alpha-Data-Refinery-Global-V6
 
+on:
+  workflow_dispatch: # 手動觸發執行
+  schedule:
+    - cron: '0 21 * * *' # 每天晚上執行一次（可自行調整）
+
+jobs:
+  # 第一階段：六國並行清洗與分析
+  refine-markets:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 定義六國資料庫名稱（對應你的 .db 檔名，不含 .db）
+        market_db: [tw_stock_warehouse, jp_stock_warehouse, us_stock_warehouse, cn_stock_warehouse, kr_stock_warehouse, hk_stock_warehouse]
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas numpy google-api-python-client google-auth python-dotenv requests
+
+      - name: Run Pipeline
+        env:
+          GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
+          PARENT_FOLDER_ID: ${{ secrets.PARENT_FOLDER_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # 執行主控中心，傳入目前矩陣的資料庫名稱
+          python main_pipeline.py --db ${{ matrix.market_db }}
+
+      # 將每台機器產出的摘要暫存，供下一階段彙整
+      - name: Upload Summary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-${{ matrix.market_db }}
+          path: summary_${{ matrix.market_db }}.txt
+          retention-days: 1
+
+  # 第二階段：彙整報告並發送 Telegram
+  report-summary:
+    needs: refine-markets # 等上面六台機器全部跑完才執行
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Requests
+        run: pip install requests python-dotenv
+
+      # 下載所有機器產出的摘要檔案
+      - name: Download All Summaries
+        uses: actions/download-artifact@v4
+        with:
+          path: all_summaries
+          pattern: summary-*
+          merge-multiple: true
+
+      - name: Send Final Telegram Report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # 執行報告器
+          python batch_reporter.py
