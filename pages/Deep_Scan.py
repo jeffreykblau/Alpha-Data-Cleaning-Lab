@@ -6,23 +6,33 @@ import google.generativeai as genai
 import os
 
 # 1. 頁面配置
-st.set_page_config(page_title="AI 深度個股掃描", layout="wide")
+st.set_page_config(page_title="AI 綜合個股深度掃描", layout="wide")
 
 # 2. 側邊欄與資料庫連線
 market_option = st.sidebar.selectbox("🚩 選擇市場", ("TW", "JP", "CN", "US", "HK", "KR"), key="scan_market")
-db_map = {"TW":"tw_stock_warehouse.db", "JP":"jp_stock_warehouse.db", "CN":"cn_stock_warehouse.db", 
-          "US":"us_stock_warehouse.db", "HK":"hk_stock_warehouse.db", "KR":"kr_stock_warehouse.db"}
+db_map = {
+    "TW": "tw_stock_warehouse.db", 
+    "JP": "jp_stock_warehouse.db", 
+    "CN": "cn_stock_warehouse.db", 
+    "US": "us_stock_warehouse.db", 
+    "HK": "hk_stock_warehouse.db", 
+    "KR": "kr_stock_warehouse.db"
+}
 target_db = db_map[market_option]
 
 if not os.path.exists(target_db):
-    st.error(f"請先回到主頁面同步 {market_option} 資料庫")
+    st.error(f"請先回到首頁同步 {market_option} 數據庫")
     st.stop()
 
 # 3. 核心數據讀取
 @st.cache_data
 def get_full_stock_info(_db_path):
     conn = sqlite3.connect(_db_path)
-    df = pd.read_sql("SELECT symbol, name, sector FROM stock_info", conn)
+    # 嘗試抓取股票清單，若表不存在則回傳空表
+    try:
+        df = pd.read_sql("SELECT symbol, name FROM stock_info", conn)
+    except:
+        df = pd.DataFrame(columns=['symbol', 'name'])
     conn.close()
     return df
 
@@ -33,19 +43,15 @@ try:
     st.title("🔍 AI 綜合個股深度掃描")
     st.write("本模組整合 **動能、風險、妖性** 三大維度，由 Gemini 提供深度分析。")
 
-    selected = st.selectbox("請搜尋代碼或名稱", options=stock_df['display'].tolist(), index=None)
+    selected = st.selectbox("請搜尋代碼或名稱 (例如輸入 1101 或 台泥)", options=stock_df['display'].tolist(), index=None)
 
     if selected:
         target_symbol = selected.split(" ")[0]
         conn = sqlite3.connect(target_db)
         
-        # 抓取該股所有關鍵維度 (最新一筆)
-        scan_q = f"""
-        SELECT * FROM cleaned_daily_base 
-        WHERE StockID = '{target_symbol}' 
-        ORDER BY 日期 DESC LIMIT 1
-        """
-        data = pd.read_sql(scan_q, conn).iloc[0]
+        # 抓取該股最新一筆所有資料
+        scan_q = f"SELECT * FROM cleaned_daily_base WHERE StockID = '{target_symbol}' ORDER BY 日期 DESC LIMIT 1"
+        data_all = pd.read_sql(scan_q, conn)
         
         # 抓取歷史隔日沖統計 (五年)
         hist_q = f"""
@@ -57,69 +63,79 @@ try:
         hist = pd.read_sql(hist_q, conn).iloc[0]
         conn.close()
 
-        # --- 佈局一：數據雷達圖 (視覺化動能與風險) ---
-        st.divider()
-        col_left, col_right = st.columns([1, 1])
-        
-        with col_left:
-            st.subheader("📊 多維度評分")
-            # 準備雷達圖數據
-            categories = ['短線動能(5D)', '中線動能(20D)', '長線動能(200D)', '穩定度(1-波動)', '防禦力(1-回撤)']
-            # 簡單正規化處理 (僅供視覺參考)
-            values = [
-                min(max(data['Ret_5D']*5 + 0.5, 0.1), 1),
-                min(max(data['Ret_20D']*2 + 0.5, 0.1), 1),
-                min(max(data['Ret_200D'] + 0.5, 0.1), 1),
-                max(1 - data['volatility_20d']*2, 0.1),
-                max(1 + data['drawdown_after_high_20d'], 0.1)
-            ]
+        if not data_all.empty:
+            data = data_all.iloc[0]
+            cols = data.index.tolist()
+
+            # --- 動態欄位偵測工具 ---
+            def get_val(names):
+                for n in names:
+                    if n in cols: return data[n]
+                return 0
+
+            # 抓取雷達圖與 AI 分析所需的關鍵數據
+            r5 = get_val(['Ret_5D', 'Ret_5d', '5日漲跌幅', 'rolling_ret_5'])
+            r20 = get_val(['Ret_20D', 'Ret_20d', '20日漲跌幅', 'rolling_ret_20'])
+            r200 = get_val(['Ret_200D', 'Ret_200d', '200日漲跌幅', 'rolling_ret_200'])
+            vol = get_val(['volatility_20d', 'vol_20', '20日波動率'])
+            dd = get_val(['drawdown_after_high_20d', 'dd_20', '20日回撤'])
+            curr_price = get_val(['收盤', 'Close', 'price'])
+
+            # --- 佈局一：雷達圖 ---
+            st.divider()
+            col_left, col_right = st.columns([1, 1])
             
-            fig = go.Figure(data=go.Scatterpolar(r=values, theta=categories, fill='toself', name=selected))
-            fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])), showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
+            with col_left:
+                st.subheader("📊 多維度體質評分")
+                categories = ['短線動能', '中線動能', '長線動能', '穩定度', '防禦力']
+                # 正規化數值以便繪圖 (0-1 區間)
+                plot_values = [
+                    min(max(r5 * 5 + 0.5, 0.1), 1),
+                    min(max(r20 * 2 + 0.5, 0.1), 1),
+                    min(max(r200 + 0.5, 0.1), 1),
+                    max(1 - vol * 2, 0.1),
+                    max(1 + dd, 0.1)
+                ]
+                
+                fig = go.Figure(data=go.Scatterpolar(r=plot_values, theta=categories, fill='toself', name=selected))
+                fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])), showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
 
-        with col_right:
-            st.subheader("📋 核心指標清單")
-            st.write(f"**行業分類**：{data.get('行業', '未知')}")
-            st.write(f"**當前價格**：{data['收盤']}")
-            st.write(f"**20D 波動率**：{data['volatility_20d']*100:.2f}%")
-            st.write(f"**20D 最大回撤**：{data['drawdown_after_high_20d']*100:.2f}%")
-            st.write(f"**歷史漲停次數**：{int(hist['lu'] or 0)} 次")
-            st.write(f"**平均隔日溢價**：{(hist['ov'] or 0)*100:.2f}%")
+            with col_right:
+                st.subheader("📋 當前核心指標")
+                st.write(f"**最新日期**：{data['日期']}")
+                st.write(f"**收盤價**：{curr_price}")
+                st.write(f"**20D 波動率**：{vol*100:.2f}%")
+                st.write(f"**20D 最大回撤**：{dd*100:.2f}%")
+                st.write(f"**5年漲停次數**：{int(hist['lu'] or 0)} 次")
+                st.write(f"**平均隔日溢價**：{(hist['ov'] or 0)*100:.2f}%")
 
-        # --- 佈局二：Gemini AI 智慧診斷 ---
-        st.divider()
-        st.subheader("🤖 AI 投資診斷報告")
-        
-        if st.button("🚀 產生深度分析報告"):
-            if "GEMINI_API_KEY" in st.secrets:
-                try:
-                    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-                    model = genai.GenerativeModel('gemini-1.5-flash')
-                    
-                    analysis_prompt = f"""
-                    你是一位專業的量化分析師。請針對股票 {selected} 給出深度評估報告：
-                    【動能數據】
-                    - 5D 報酬：{data['Ret_5D']*100:.2f}%
-                    - 20D 報酬：{data['Ret_20D']*100:.2f}%
-                    - 200D 報酬：{data['Ret_200D']*100:.2f}%
-                    【風險數據】
-                    - 波動率 (20D)：{data['volatility_20d']*100:.2f}%
-                    - 最大回撤 (20D)：{data['drawdown_after_high_20d']*100:.2f}%
-                    【妖性數據】
-                    - 歷史漲停次數：{hist['lu']}
-                    - 漲停後隔日平均溢價：{(hist['ov'] or 0)*100:.2f}%
-                    
-                    請從『動能持續性』、『回撤風險』、『個股慣性』三個面向分析，並給予 1-10 分的推薦分。
-                    """
-                    
-                    with st.spinner("AI 正在解析大數據流..."):
-                        response = model.generate_content(analysis_prompt)
-                        st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"AI 分析失敗: {e}")
-            else:
-                st.warning("請先設定 GEMINI_API_KEY")
+            # --- 佈局二：AI 深度報告 ---
+            st.divider()
+            if st.button("🚀 生成 AI 深度診斷報告"):
+                if "GEMINI_API_KEY" in st.secrets:
+                    try:
+                        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+                        # 自動偵測可用模型
+                        available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                        target_model = 'models/gemini-1.5-flash' if 'models/gemini-1.5-flash' in available else available[0]
+                        model = genai.GenerativeModel(target_model)
+                        
+                        prompt = f"""
+                        你是一位專業量化分析師，請分析股票 {selected}：
+                        - 短/中/長線動能：{r5*100:.1f}% / {r20*100:.1f}% / {r200*100:.1f}%
+                        - 20D波動率：{vol*100:.1f}%, 20D最大回撤：{dd*100:.1f}%
+                        - 歷史妖性：漲停{hist['lu']}次，隔日開盤溢價{(hist['ov'] or 0)*100:.2f}%
+                        請給出投資建議，評估其是否適合隔日沖或波段持有。
+                        """
+                        
+                        with st.spinner(f"AI 正在精煉數據 (使用 {target_model})..."):
+                            response = model.generate_content(prompt)
+                            st.markdown(f"### 🤖 AI 診斷結果\n{response.text}")
+                    except Exception as e:
+                        st.error(f"AI 分析失敗: {e}")
+                else:
+                    st.warning("請在 Secrets 中設定 GEMINI_API_KEY")
 
 except Exception as e:
     st.error(f"掃描模組載入失敗: {e}")
