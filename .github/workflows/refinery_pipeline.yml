@@ -1,9 +1,9 @@
 name: Alpha-Data-Refinery-Global-V6
 
 on:
-  workflow_dispatch: # 手動觸發執行
+  workflow_dispatch: # 手動觸發
   schedule:
-    - cron: '0 21 * * *' # 每天晚上執行一次（可自行調整）
+    - cron: '0 21 * * *' # 每天晚上執行 (UTC 21:00)
 
 jobs:
   # 第一階段：六國並行清洗與分析
@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 定義六國資料庫名稱（對應你的 .db 檔名，不含 .db）
+        # 定義六國資料庫名稱
         market_db: [tw_stock_warehouse, jp_stock_warehouse, us_stock_warehouse, cn_stock_warehouse, kr_stock_warehouse, hk_stock_warehouse]
     
     steps:
@@ -30,15 +30,26 @@ jobs:
 
       - name: Run Pipeline
         env:
+          # 1. 核心憑證
           GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
-          PARENT_FOLDER_ID: ${{ secrets.PARENT_FOLDER_ID }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          
+          # 2. 將所有市場的 ID 都傳入環境變數，讓 Python 可以根據 MARKET_TYPE 抓取
+          TW_DB_ID: ${{ secrets.TW_DB_ID }}
+          US_DB_ID: ${{ secrets.US_DB_ID }}
+          JP_DB_ID: ${{ secrets.JP_DB_ID }}
+          HK_DB_ID: ${{ secrets.HK_DB_ID }}
+          KR_DB_ID: ${{ secrets.KR_DB_ID }}
+          CN_DB_ID: ${{ secrets.CN_DB_ID }}
         run: |
-          # 執行主控中心，傳入目前矩陣的資料庫名稱
-          python main_pipeline.py --db ${{ matrix.market_db }}
+          # 💡 關鍵修正：從市場名稱提取簡稱並轉大寫 (例如 tw_stock_warehouse -> TW)
+          export MARKET_TYPE=$(echo "${{ matrix.market_db }}" | cut -d'_' -f1 | tr '[:lower:]' '[:upper:]')
+          echo "🚀 正在啟動市場精煉: $MARKET_TYPE"
+          
+          # 執行 Pipeline (不需帶參數，程式會直接讀取 MARKET_TYPE)
+          python main_pipeline.py
 
       # 將每台機器產出的摘要暫存，供下一階段彙整
+      # 注意：Python 內需產出名為 summary_${{ matrix.market_db }}.txt 的檔案
       - name: Upload Summary Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -75,5 +86,5 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # 執行報告器
+          # 執行報告器，讀取 all_summaries 資料夾下的所有 txt
           python batch_reporter.py
