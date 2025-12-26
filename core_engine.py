@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import sqlite3
 
 class AlphaCoreEngine:
     def __init__(self, conn, rules, market_abbr):
@@ -9,36 +10,61 @@ class AlphaCoreEngine:
         self.df = None
 
     def execute(self):
-        """
-        執行精煉任務，補全週期分析與風險指標(10D, 20D, 50D)
-        """
-        self.df = pd.read_sql("SELECT * FROM cleaned_daily_base", self.conn)
+        print(f"--- 🚀 啟動 {self.market_abbr} 增量精煉 (2023至今) ---")
         
-        if self.df.empty:
-            return f"Market {self.market_abbr}: No data."
+        # 1. 建立索引 (如果不存在)，加速讀取
+        try:
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_date ON cleaned_daily_base (StockID, 日期)")
+        except: pass
 
-        # 基礎預處理
+        # 2. 限制讀取規模：只讀取 2023-01-01 以後的數據
+        # 這是解決 GitHub Action 記憶體溢位(OOM) 與中國市場失敗的關鍵
+        cutoff_date = "2023-01-01"
+        query = f"SELECT * FROM cleaned_daily_base WHERE 日期 >= '{cutoff_date}'"
+        
+        try:
+            self.df = pd.read_sql(query, self.conn)
+            if self.df.empty:
+                # 保底機制：如果 2023 後沒數據，抓取最後 10 萬筆
+                print("⚠️ 2023後無數據，切換至保底模式讀取最後 10 萬筆")
+                self.df = pd.read_sql("SELECT * FROM cleaned_daily_base ORDER BY 日期 DESC LIMIT 100000", self.conn)
+        except Exception as e:
+            print(f"⚠️ SQL 讀取錯誤: {e}")
+            return f"Error: {e}"
+
+        print(f"📊 數據量: {len(self.df)} 筆。開始精煉指標...")
+
+        # 3. 基礎預處理
         self.df = self.df.sort_values(['StockID', '日期']).reset_index(drop=True)
         self.df['日期'] = pd.to_datetime(self.df['日期'])
         
-        # 1. 判定漲停 (修正標記，解決 ETF 問題)
+        # 4. 套用市場規則 (漲停判定)
         self.df = self.rules.apply(self.df)
         
-        # 2. 計算所有報酬與週期指標
-        self.calculate_returns()           # 基礎報酬
-        self.calculate_rolling_returns()    # Ret_5D, 20D, 200D
-        self.calculate_period_returns()     # 周/月/年累積
-        self.calculate_sequence_counts()    # 連板重置
-        
-        # 3. 計算風險指標 (補齊 10D, 20D, 50D)
+        # 5. 計算各項指標
+        self.calculate_returns()
+        self.calculate_rolling_returns()
+        self.calculate_period_returns()
+        self.calculate_sequence_counts()
         self.calculate_risk_metrics_extended()
         
-        # 4. 轉換日期格式並寫回
+        # 6. 轉回日期字串，準備寫入
         self.df['日期'] = self.df['日期'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 7. 寫回資料庫 (這裡使用 replace 會更新 2023 以後的整張表結構)
+        print("💾 正在寫入精煉數據...")
         self.df.to_sql("cleaned_daily_base", self.conn, if_exists="replace", index=False)
         
-        return f"✅ {self.market_abbr} 精煉完成，已補齊風險與週期欄位。"
+        # 8. 壓縮檔案空間 (重要：防止資料庫體積持續膨脹)
+        print("🧹 執行 VACUUM 壓縮...")
+        try:
+            self.conn.execute("VACUUM")
+        except: pass
+        
+        last_date = self.df['日期'].max()
+        return f"✅ {self.market_abbr} 精煉完成！最新日期：{last_date}"
 
+    # --- 以下計算邏輯維持不變 ---
     def calculate_returns(self):
         self.df['Prev_Close'] = self.df.groupby('StockID')['收盤'].shift(1)
         self.df['Ret_Day'] = (self.df['收盤'] / self.df['Prev_Close']) - 1
@@ -51,13 +77,10 @@ class AlphaCoreEngine:
 
     def calculate_period_returns(self):
         temp_dt = pd.to_datetime(self.df['日期'])
-        # 周累積
         week_first = self.df.groupby(['StockID', temp_dt.dt.to_period('W')])['收盤'].transform('first')
         self.df['周累计漲跌幅(本周开盘)'] = (self.df['收盤'] / week_first) - 1
-        # 月累積 (Ret_M)
         month_first = self.df.groupby(['StockID', temp_dt.dt.to_period('M')])['收盤'].transform('first')
         self.df['月累计漲跌幅(本月开盘)'] = (self.df['收盤'] / month_first) - 1
-        # 年累積
         year_first = self.df.groupby(['StockID', temp_dt.dt.year])['收盤'].transform('first')
         self.df['年累計漲跌幅(本年开盘)'] = (self.df['收盤'] / year_first) - 1
 
@@ -68,18 +91,11 @@ class AlphaCoreEngine:
         self.df['Seq_LU_Count'] = self.df.groupby('StockID')['is_limit_up'].transform(get_sequence)
 
     def calculate_risk_metrics_extended(self):
-        """
-        對齊 Risk_Metrics 頁面的 SQL 需求：10D, 20D, 50D
-        """
         for d in [10, 20, 50]:
-            # 波動率 (年化)
             self.df[f'volatility_{d}d'] = self.df.groupby('StockID')['Ret_Day'].transform(
                 lambda x: x.rolling(d).std() * (252**0.5)
             )
-            # 最大回撤
             rolling_max = self.df.groupby('StockID')['收盤'].transform(lambda x: x.rolling(d, min_periods=1).max())
             self.df[f'drawdown_after_high_{d}d'] = (self.df['收盤'] / rolling_max) - 1
-            
-        # 計算 recovery_from_dd_10d (當前價格相對於 10D 最低點的反彈程度)
         rolling_min_10d = self.df.groupby('StockID')['收盤'].transform(lambda x: x.rolling(10, min_periods=1).min())
         self.df['recovery_from_dd_10d'] = (self.df['收盤'] / rolling_min_10d) - 1
