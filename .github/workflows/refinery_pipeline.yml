@@ -1,19 +1,35 @@
 name: Alpha-Data-Refinery-Global-V6
 
 on:
-  workflow_dispatch: # 手動觸發
+  workflow_dispatch:
+    inputs:
+      manual_market:
+        description: '選擇要手動執行的市場 (選 all 則執行六國並行)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - tw_stock_warehouse
+          - us_stock_warehouse
+          - jp_stock_warehouse
+          - hk_stock_warehouse
+          - kr_stock_warehouse
+          - cn_stock_warehouse
   schedule:
-    - cron: '0 21 * * *' # 每天晚上執行 (UTC 21:00)
+    - cron: '0 21 * * *'
 
 jobs:
-  # 第一階段：六國並行清洗與分析
   refine-markets:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 定義六國資料庫名稱
-        market_db: [tw_stock_warehouse, jp_stock_warehouse, us_stock_warehouse, cn_stock_warehouse, kr_stock_warehouse, hk_stock_warehouse]
+        # 這裡的邏輯：如果手動選 all，就跑陣列裡的所有國家；如果選了特定國家，就只跑那一台機器
+        market_db: >-
+          ${{ github.event.inputs.manual_market == 'all' || github.event_name == 'schedule' 
+          ? '["tw_stock_warehouse", "jp_stock_warehouse", "us_stock_warehouse", "cn_stock_warehouse", "kr_stock_warehouse", "hk_stock_warehouse"]' 
+          : format('["{0}"]', github.event.inputs.manual_market) }}
     
     steps:
       - name: Checkout Code
@@ -25,31 +41,17 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
-        run: |
-          pip install pandas numpy google-api-python-client google-auth python-dotenv requests
+        run: pip install pandas numpy google-api-python-client google-auth python-dotenv requests
 
       - name: Run Pipeline
         env:
-          # 1. 核心憑證
           GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
-          
-          # 2. 將所有市場的 ID 都傳入環境變數，讓 Python 可以根據 MARKET_TYPE 抓取
-          TW_DB_ID: ${{ secrets.TW_DB_ID }}
-          US_DB_ID: ${{ secrets.US_DB_ID }}
-          JP_DB_ID: ${{ secrets.JP_DB_ID }}
-          HK_DB_ID: ${{ secrets.HK_DB_ID }}
-          KR_DB_ID: ${{ secrets.KR_DB_ID }}
-          CN_DB_ID: ${{ secrets.CN_DB_ID }}
         run: |
-          # 💡 關鍵修正：從市場名稱提取簡稱並轉大寫 (例如 tw_stock_warehouse -> TW)
+          # 從 matrix 提取簡稱 (如 tw_stock_warehouse -> TW)
           export MARKET_TYPE=$(echo "${{ matrix.market_db }}" | cut -d'_' -f1 | tr '[:lower:]' '[:upper:]')
-          echo "🚀 正在啟動市場精煉: $MARKET_TYPE"
-          
-          # 執行 Pipeline (不需帶參數，程式會直接讀取 MARKET_TYPE)
+          echo "🚀 啟動任務: $MARKET_TYPE"
           python main_pipeline.py
 
-      # 將每台機器產出的摘要暫存，供下一階段彙整
-      # 注意：Python 內需產出名為 summary_${{ matrix.market_db }}.txt 的檔案
       - name: Upload Summary Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -57,34 +59,25 @@ jobs:
           path: summary_${{ matrix.market_db }}.txt
           retention-days: 1
 
-  # 第二階段：彙整報告並發送 Telegram
   report-summary:
-    needs: refine-markets # 等上面六台機器全部跑完才執行
+    needs: refine-markets
     runs-on: ubuntu-latest
+    if: always() # 確保即便有國家失敗，報告還是會發送
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-
-      - name: Install Requests
-        run: pip install requests python-dotenv
-
-      # 下載所有機器產出的摘要檔案
       - name: Download All Summaries
         uses: actions/download-artifact@v4
         with:
           path: all_summaries
           pattern: summary-*
           merge-multiple: true
-
       - name: Send Final Telegram Report
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          # 執行報告器，讀取 all_summaries 資料夾下的所有 txt
-          python batch_reporter.py
+        run: python batch_reporter.py
