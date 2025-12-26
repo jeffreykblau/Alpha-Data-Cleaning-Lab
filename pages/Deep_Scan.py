@@ -62,7 +62,7 @@ try:
         """
         hist = pd.read_sql(hist_q, conn).iloc[0]
 
-        # 抓取隔日沖樣本數據 (用於計算勝率與分布)
+        # 抓取隔日沖樣本數據
         sample_q = f"SELECT Overnight_Alpha, Next_1D_Max FROM cleaned_daily_base WHERE StockID = '{target_symbol}' AND Prev_LU = 1"
         samples = pd.read_sql(sample_q, conn)
         conn.close()
@@ -76,7 +76,7 @@ try:
                     if n in cols: return data[n]
                 return 0
 
-            # 基礎指標
+            # 基礎指標獲取
             r5 = get_val(['Ret_5D', 'Ret_5d', '5日漲跌幅'])
             r20 = get_val(['Ret_20D', 'Ret_20d', '20日漲跌幅'])
             r200 = get_val(['Ret_200D', 'Ret_200d', '200日漲跌幅'])
@@ -115,7 +115,8 @@ try:
             st.divider()
             st.subheader("⚡ 隔日沖慣性回測 (五年樣本)")
             
-            if hist['lu'] > 0:
+            win_rate = 0
+            if hist['lu'] > 0 and not samples.empty:
                 win_count = len(samples[samples['Overnight_Alpha'] > 0])
                 win_rate = (win_count / hist['lu'] * 100)
                 
@@ -124,10 +125,9 @@ try:
                 c2.metric("開盤獲利均值", f"{(samples['Overnight_Alpha'].mean()*100):.2f}%")
                 c3.metric("盤中最高期望值", f"{(samples['Next_1D_Max'].mean()*100):.2f}%")
                 
-                # 分布圖
                 fig_hist = px.histogram(
                     samples, x=samples['Overnight_Alpha']*100, 
-                    nbins=15, title="隔日開盤利潤分布 (%)",
+                    nbins=15, title="隔日開盤利盤分布 (%)",
                     labels={'x': '利潤 %', 'count': '次數'},
                     color_discrete_sequence=['#FFD700']
                 )
@@ -144,21 +144,33 @@ try:
             if st.button("🚀 生成 AI 專家深度診斷報告"):
                 if "GEMINI_API_KEY" in st.secrets:
                     try:
+                        # --- AI 模型配置與自動路徑修復 ---
                         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                        
+                        # 優先級嘗試
+                        target_model = None
+                        for choice in ['models/gemini-1.5-flash', 'gemini-1.5-flash', 'models/gemini-pro']:
+                            if choice in available_models:
+                                target_model = choice
+                                break
+                        
+                        if not target_model: target_model = available_models[0]
+
+                        model = genai.GenerativeModel(target_model)
                         prompt = f"""
                         分析股票 {selected}：
                         - 20D波動率/回撤：{vol*100:.1f}% / {dd*100:.1f}%
                         - 5年漲停次數：{hist['lu']}
-                        - 隔日沖勝率：{win_rate if hist['lu']>0 else 0:.1f}%
+                        - 隔日沖勝率：{win_rate:.1f}%
                         - 隔日開盤溢價均值：{(hist['ov'] or 0)*100:.2f}%
                         請評估該股是否適合『隔日沖交易』，並分析其漲停後的慣性。
                         """
-                        with st.spinner("AI 正在解析歷史妖性..."):
+                        with st.spinner(f"AI 正在解析 (使用 {target_model})..."):
                             response = model.generate_content(prompt)
                             st.markdown(f"### 🤖 AI 診斷報告\n{response.text}")
                     except Exception as e:
-                        st.error(f"AI 分析失敗: {e}")
+                        st.error(f"AI 啟動失敗: {e}")
                 else:
                     st.warning("請先設定 GEMINI_API_KEY")
 
