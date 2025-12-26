@@ -39,10 +39,7 @@ def download_db_from_drive(db_name):
         items = results.get('files', [])
 
         if not items:
-            all_files = service.files().list(q=f"'{parent_id}' in parents").execute().get('files', [])
-            names = [f['name'] for f in all_files]
-            st.error(f"❌ 找不到檔案: {db_name}")
-            st.info(f"雲端資料夾內容: {names}")
+            st.error(f"❌ 雲端找不到檔案: {db_name}")
             return False
 
         file_id = items[0]['id']
@@ -60,7 +57,7 @@ def download_db_from_drive(db_name):
         st.error(f"下載失敗: {str(e)}")
         return False
 
-# --- 4. 資料庫同步與連線 ---
+# --- 4. 資料庫同步與連線管理 ---
 db_map = {
     "TW": "tw_stock_warehouse.db",
     "JP": "jp_stock_warehouse.db",
@@ -78,7 +75,6 @@ if not os.path.exists(target_db):
         else:
             st.stop()
 
-# 使用快取讀取股票清單
 @st.cache_data
 def get_stock_list(_db_path):
     conn_local = sqlite3.connect(_db_path)
@@ -86,9 +82,9 @@ def get_stock_list(_db_path):
     conn_local.close()
     return df
 
-# --- 5. UI 主介面 ---
-st.title(f"📊 {market_option} 市場強勢股看板")
-tab1, tab2 = st.tabs(["🔥 市場熱度分析", "🤖 AI 個股診斷"])
+# --- 5. UI 主介面設計 ---
+st.title(f"📊 {market_option} 市場大數據分析系統")
+tab1, tab2 = st.tabs(["🔥 市場熱度看板", "🤖 AI 個股診斷"])
 
 # 分頁 1: 市場熱度
 with tab1:
@@ -116,19 +112,20 @@ with tab1:
     finally:
         conn.close()
 
-# 分頁 2: AI 診斷
+# 分頁 2: AI 診斷與詳細日期
 with tab2:
-    st.subheader("🔍 個股大數據 AI 診斷")
+    st.subheader("🔍 個股歷史妖性與隔日沖分析")
     
-    # 獲取搜尋清單
     try:
         stocks = get_stock_list(target_db)
         stocks['display'] = stocks['symbol'] + " " + stocks['name']
-        selected_stock = st.selectbox("請輸入代碼或名稱搜尋", options=stocks['display'].tolist(), index=None, placeholder="例如: 2330 或 1")
+        selected_stock = st.selectbox("搜尋股票代碼或名稱", options=stocks['display'].tolist(), index=None, placeholder="例如: 2330 或 1")
 
         if selected_stock:
             target_symbol = selected_stock.split(" ")[0]
             conn = sqlite3.connect(target_db)
+            
+            # 歷史大數據統計
             diag_q = f"""
             SELECT COUNT(*) as total, SUM(is_limit_up) as lu, 
             AVG(CASE WHEN Prev_LU=1 THEN Overnight_Alpha END) as ov, 
@@ -136,36 +133,55 @@ with tab2:
             FROM cleaned_daily_base WHERE StockID = '{target_symbol}'
             """
             res = pd.read_sql(diag_q, conn).iloc[0]
-            conn.close()
+
+            # 計算隔日沖勝率 (溢價 > 0 的次數 / 總漲停次數)
+            win_q = f"SELECT COUNT(*) FROM cleaned_daily_base WHERE StockID = '{target_symbol}' AND Prev_LU = 1 AND Overnight_Alpha > 0"
+            win_count = pd.read_sql(win_q, conn).iloc[0, 0]
+            win_rate = (win_count / res['lu'] * 100) if res['lu'] > 0 else 0
             
             if res['total'] > 0:
-                st.write(f"### {selected_stock} 數據回測")
-                m1, m2, m3 = st.columns(3)
+                st.write(f"### {selected_stock} 歷史回測數據")
+                m1, m2, m3, m4 = st.columns(4)
                 m1.metric("漲停/大漲次數", f"{int(res['lu'] or 0)} 次")
-                m2.metric("隔日開盤溢價均值", f"{(res['ov'] or 0)*100:.2f}%")
-                m3.metric("隔日最高期望值", f"{(res['nxt'] or 0)*100:.2f}%")
-                
+                m2.metric("隔日溢價均值", f"{(res['ov'] or 0)*100:.2f}%")
+                m3.metric("隔日最高期望", f"{(res['nxt'] or 0)*100:.2f}%")
+                m4.metric("隔日沖勝率", f"{win_rate:.1f}%")
+
+                # --- 歷史明細摺疊清單 ---
+                with st.expander("📅 查看 5 年內漲停/大漲詳細日期"):
+                    detail_q = f"""
+                    SELECT 日期, 收盤, 
+                           ROUND(Ret_Day * 100, 2) as '當日漲幅%',
+                           ROUND(Overnight_Alpha * 100, 2) as '隔日溢價%',
+                           ROUND(Next_1D_Max * 100, 2) as '隔日最高%'
+                    FROM cleaned_daily_base 
+                    WHERE StockID = '{target_symbol}' AND is_limit_up = 1
+                    ORDER BY 日期 DESC
+                    """
+                    df_details = pd.read_sql(detail_q, conn)
+                    if not df_details.empty:
+                        st.dataframe(df_details, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("該股票近五年有波動，但未達漲停篩選標準。")
+
                 # --- AI 分析按鈕 ---
-                if st.button("🚀 啟動 AI 專家分析"):
+                if st.button("🚀 啟動 AI 專家深度診斷"):
                     if "GEMINI_API_KEY" in st.secrets:
                         try:
                             genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-                            
-                            # 自動偵測可用模型
                             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                             target_model_name = 'models/gemini-1.5-flash' if 'models/gemini-1.5-flash' in available_models else available_models[0]
-                            
                             model = genai.GenerativeModel(target_model_name)
                             
                             prompt = f"""
                             你是一位量化交易專家，請針對股票 {selected_stock} 進行診斷：
-                            1. 過去5年漲停次數：{res['lu']} 次
-                            2. 漲停後隔日開盤溢價均值：{(res['ov'] or 0)*100:.2f}%
-                            3. 漲停後隔日盤中最高價平均：{(res['nxt'] or 0)*100:.2f}%
-                            請分析該股的慣性（如：是否容易開高走低、隔日沖勝率等）並給予操作建議。
+                            - 過去5年漲停次數：{res['lu']} 次
+                            - 漲停後隔日開盤平均溢價：{(res['ov'] or 0)*100:.2f}%
+                            - 漲停後隔日盤中最高價平均：{(res['nxt'] or 0)*100:.2f}%
+                            - 隔日沖勝率：{win_rate:.1f}%
+                            請分析該股的慣性（是否容易開高走低、隔日沖勝率評價）並給予操作建議。
                             """
-                            
-                            with st.spinner(f"AI 正在進行深度運算 (使用 {target_model_name})..."):
+                            with st.spinner(f"AI 正在讀取歷史紀錄 (使用 {target_model_name})..."):
                                 response = model.generate_content(prompt)
                                 st.markdown("---")
                                 st.markdown(f"### 🤖 AI 專家診斷報告\n{response.text}")
@@ -175,5 +191,6 @@ with tab2:
                         st.warning("請在 Secrets 中設定 GEMINI_API_KEY")
             else:
                 st.warning("該個股數據不足。")
+            conn.close()
     except Exception as e:
         st.error(f"搜尋組件載入失敗: {e}")
