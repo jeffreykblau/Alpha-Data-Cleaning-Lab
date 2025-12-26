@@ -1,3 +1,15 @@
+# 核心網頁與數據處理
 streamlit
 pandas
 plotly
+numpy
+
+# Google Drive API 串接 (網頁端下載 .db 檔案必備)
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+google-auth
+
+# 其他通訊與環境工具
+requests
+python-dotenv
