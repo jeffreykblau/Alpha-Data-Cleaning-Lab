@@ -3,46 +3,49 @@ import numpy as np
 
 class AlphaCoreEngine:
     def __init__(self, conn, rules, market_abbr):
-        """
-        適應 main_pipeline.py 的參數結構
-        conn: sqlite3 連線物件
-        rules: MarketRuleRouter 實例
-        market_abbr: 市場縮寫 (TW, US, JP...)
-        """
         self.conn = conn
         self.rules = rules
         self.market_abbr = market_abbr
         self.df = None
 
-    def refine_all(self):
+    def execute(self):
         """
-        執行完整清洗流程，對應 pipeline.run_process 內部的呼叫
+        對應 main_pipeline.py 第 56 行的呼叫
+        執行清洗並回傳 summary 字典
         """
-        # 1. 從資料庫讀取原始數據
+        # 1. 讀取數據
         self.df = pd.read_sql("SELECT * FROM cleaned_daily_base", self.conn)
         
         if self.df.empty:
-            return self.df
+            return {"status": "empty", "count": 0}
+
+        initial_count = len(self.df)
         
-        # 2. 排序 (確保計算 Prev_Close 正確)
+        # 2. 排序與規則套用 (昨日收盤基準)
         self.df = self.df.sort_values(['StockID', '日期']).reset_index(drop=True)
-        
-        # 3. 套用漲停判定規則 (這會呼叫 MarketRuleRouter)
         self.df = self.rules.apply(self.df)
         
-        # 4. 計算報酬率與溢價
+        # 3. 核心計算
         self.calculate_returns()
-        
-        # 5. 計算連板次數 (關鍵：歸零邏輯)
-        self.calculate_sequence_counts()
-        
-        # 6. 計算風險指標
+        self.calculate_sequence_counts() # 解決 1454 連板歸零邏輯
         self.calculate_risk_metrics()
         
-        # 7. 將結果寫回資料庫 (根據一般 pipeline 邏輯，這裡回傳 df 讓外部寫入)
-        return self.df
+        # 4. 將清洗後的結果寫回資料庫 (覆蓋舊表)
+        self.df.to_sql("cleaned_daily_base", self.conn, if_exists="replace", index=False)
+        
+        # 5. 構建 summary 字典回傳給 pipeline
+        summary = {
+            "market": self.market_abbr,
+            "total_records": len(self.df),
+            "limit_up_count": int(self.df['is_limit_up'].sum()),
+            "max_sequence": int(self.df['Seq_LU_Count'].max()),
+            "status": "success"
+        }
+        
+        return summary
 
     def calculate_returns(self):
+        # 使用昨日收盤 Prev_Close 作為所有報酬率的分母
         self.df['Prev_Close'] = self.df.groupby('StockID')['收盤'].shift(1)
         self.df['Ret_Day'] = (self.df['收盤'] / self.df['Prev_Close']) - 1
         self.df['Overnight_Alpha'] = (self.df['開盤'] / self.df['Prev_Close']) - 1
@@ -50,25 +53,20 @@ class AlphaCoreEngine:
 
     def calculate_sequence_counts(self):
         """
-        修正連板次數：確保 is_limit_up 為 0 時強制歸零
-        解決 ETF 1454 次連板問題
+        連板歸零重置邏輯：解決 ETF 異常連板
         """
         def get_sequence(series):
-            # 建立區塊識別，狀態改變即增加
             blocks = (series != series.shift()).cumsum()
-            # 區塊內計數
             cum_counts = series.groupby(blocks).cumcount() + 1
-            # 當 is_limit_up 為 0，乘積即為 0
             return series * cum_counts
 
         self.df['Seq_LU_Count'] = self.df.groupby('StockID')['is_limit_up'].transform(get_sequence)
 
     def calculate_risk_metrics(self):
-        # 20日波動率
+        # 20日波動率與回撤
         self.df['volatility_20d'] = self.df.groupby('StockID')['Ret_Day'].transform(
             lambda x: x.rolling(window=20).std() * (252**0.5)
         )
-        # 20日最大回撤
         self.df['rolling_max_20d'] = self.df.groupby('StockID')['收盤'].transform(
             lambda x: x.rolling(window=20, min_periods=1).max()
         )
