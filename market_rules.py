@@ -2,7 +2,7 @@
 
 class MarketRuleRouter:
     """
-    國別策略路由器：根據資料庫名稱縮寫 (TW, JP, US, CN, KR, HK) 分流至不同規則。
+    國別策略路由器：根據市場縮寫將資料流導入對應的判定規則。
     """
     @staticmethod
     def get_rules(market_abbr):
@@ -13,127 +13,92 @@ class MarketRuleRouter:
             return JapanRules()
         elif market_abbr == 'CN':
             return ChinaRules()
-        elif market_abbr == 'KR':
-            return KoreaRules()
-        # 美股與港股目前套用基礎統計規則
+        # 美國 (US)、香港 (HK)、韓國 (KR) 統一由 BaseRules 的 10% 邏輯處理
         return BaseRules()
 
 class BaseRules:
     """
-    基礎規則類別：定義通用的分類邏輯。
+    基礎規則類別：適用於 US, HK, KR 等無嚴格漲停限制市場。
+    定義單日漲幅 ≥ 10% 且收紅K為「強勢標的」。
     """
     def classify_lu_type4(self, row, limit_price):
-        """
-        漲停行為分類 (LU_Type4)：
-        1: 無量鎖死 (一字板) - 開盤即漲停且最高等於最低。
-        2: GAP-UP (跳空板) - 開盤漲幅 >= 7%。
-        3: 高量換手 (爆量板) - 當日成交量 >= 5日均量之 3 倍。
-        4: 浮動漲停 (普通板) - 其他鎖死型態。
-        """
-        if row['開盤'] >= limit_price - 0.01 and row['最高'] == row['最低']: 
-            return 1
-        if (row['開盤'] / row['PrevClose'] - 1) >= 0.07: 
-            return 2
-        if row.get('Vol_Ratio', 0) >= 3.0: 
-            return 3
+        # 1:無量鎖死, 2:跳空, 3:爆量, 4:普通
+        if row.get('開盤') >= limit_price - 0.01 and row.get('最高') == row.get('最低'): return 1
+        if (row.get('開盤') / row.get('PrevClose', 1) - 1) >= 0.07: return 2
+        if row.get('Vol_Ratio', 0) >= 3.0: return 3
         return 4
 
     def classify_fail_type(self, row):
-        """
-        隔日沖死法分類 (Fail_Type)：
-        1: 崩潰 (Fail1) - 昨漲停今跌幅超過 5%。
-        2: 炸板 (Fail2) - 盤中觸及漲停價但收盤未鎖住。
-        4: 無溢價 - 昨漲停今日開盤價 <= 0%。
-        """
-        # 取得漲停價，若無定義則預設為收盤價
-        limit_p = row.get('Limit_Price', row['收盤'])
-        
-        if row['Ret_Day'] <= -0.05: 
-            return 1
-        if row['最高'] >= limit_p and not row.get('is_limit_up', False): 
-            return 2
-        if row.get('Overnight_Alpha', 0) <= 0: 
-            return 4
+        # 1:崩潰(Fail1), 2:炸板(Fail2), 4:無溢價
+        if row.get('Ret_Day', 0) <= -0.05: return 1
+        # 盤中觸及過 Limit_Price 但最後沒收在上面
+        if row.get('最高', 0) >= row.get('Limit_Price', 999999) and not row.get('is_limit_up', False): return 2
+        if row.get('Overnight_Alpha', 0) <= 0: return 4
         return 0
 
     def apply(self, df):
-        """預設套用於無漲跌幅限制市場。"""
-        df['Limit_Price'] = df['收盤'] # 無限制市場以收盤為準計算
-        df['is_limit_up'] = False
-        df['is_limit_down'] = False
-        # 美港股判定 20% 為暴漲
+        """通用 10% 強勢股判定邏輯"""
+        # 統一計算昨收的 1.1 倍作為參考漲停價
+        df['Limit_Price'] = df['PrevClose'] * 1.1 
+        # 判定條件：漲幅 >= 10% 且當天是收紅 K (收盤 >= 開盤)
+        df['is_limit_up'] = (df['Ret_Day'] >= 0.10) & (df['收盤'] >= df['開盤'])
+        df['is_limit_down'] = df['Ret_Day'] <= -0.10
+        # 異常值過濾：無限制市場設為 100% 波動
         df['is_anomaly'] = df['Ret_Day'].abs() > 1.0 
-        return df
-
-class JapanRules(BaseRules):
-    """
-    日本市場規則：依據價格區間固定金額判定 (TSE Special Quote 制度)。
-    """
-    def get_jp_limit_amount(self, price):
-        """實作東京證券交易所最大漲跌額度表。"""
-        if price < 100: return 30
-        if price < 500: return 80
-        if price < 1000: return 150
-        if price < 1500: return 300
-        if price < 3000: return 500
-        if price < 5000: return 700
-        if price < 10000: return 1500
-        if price < 30000: return 5000
-        return 10000
-
-    def apply(self, df):
-        df['JP_Limit'] = df['PrevClose'].apply(self.get_jp_limit_amount)
-        df['Limit_Price'] = df['PrevClose'] + df['JP_Limit']
-        
-        # 判定漲停：收盤價 >= 昨收 + 限制金額 (容許1單位誤差)
-        df['is_limit_up'] = df['收盤'] >= (df['Limit_Price'] - 1)
-        # 標記異常：遠超區間限制 50% 視為資料錯誤
-        df['is_anomaly'] = df['收盤'] > (df['Limit_Price'] + df['JP_Limit'] * 0.5)
-        df['is_limit_down'] = False # 暫不計算日股跌停
         return df
 
 class TaiwanRules(BaseRules):
     """
-    台灣市場規則：區分上市櫃與興櫃，判定 LU_Type4 與 Fail_Type。
+    台股規則：區分上市櫃 10% 與 興櫃標記。
     """
     def apply(self, df):
-        # 台股 10% 漲跌停價格計算
         df['Limit_Price'] = (df['PrevClose'] * 1.1).round(2)
-        
-        # 區分市場別判定
+        # 判斷市場別，若無標籤則預設為 10%
         if 'MarketType' in df.columns:
             listed = df['MarketType'].isin(['上市', '上櫃'])
             df.loc[listed, 'is_limit_up'] = df['Ret_Day'] >= 0.095
             df.loc[listed, 'is_limit_down'] = df['Ret_Day'] <= -0.095
             
-            # 興櫃不設漲停，但標記 80% 異常報酬
+            # 興櫃市場不標記漲停，僅標記異常
             emg = df['MarketType'] == '興櫃'
             df.loc[emg, 'is_limit_up'] = False
-            df.loc[emg, 'is_anomaly'] = df['Ret_Day'].abs() > 0.8
         else:
             df['is_limit_up'] = df['Ret_Day'] >= 0.095
             df['is_limit_down'] = df['Ret_Day'] <= -0.095
 
-        # 基礎極端值過濾
-        df.loc[df['Ret_Day'].abs() > 0.11, 'is_anomaly'] = True
+        df['is_anomaly'] = df['Ret_Day'].abs() > 0.11
+        return df
+
+class JapanRules(BaseRules):
+    """
+    日股規則：採用交易所固定金額(Tick)漲停制。
+    """
+    def apply(self, df):
+        def get_jp_limit(p):
+            if p < 100: return 30
+            if p < 500: return 80
+            if p < 1000: return 150
+            if p < 1500: return 300
+            if p < 3000: return 500
+            if p < 5000: return 700
+            return 1000
+            
+        df['JP_Limit_Amt'] = df['PrevClose'].apply(get_jp_limit)
+        df['Limit_Price'] = df['PrevClose'] + df['JP_Limit_Amt']
+        # 日股收盤價達到或超過預設漲停價（考慮1單位誤差）即視為漲停
+        df['is_limit_up'] = df['收盤'] >= (df['Limit_Price'] - 1)
+        df['is_limit_down'] = False 
+        df['is_anomaly'] = df['Ret_Day'].abs() > 0.5
         return df
 
 class ChinaRules(BaseRules):
     """
-    中國 A 股規則：區分主板 10% 與科創/創業板 20%。
+    陸股規則：簡化判定主板 10%。
     """
     def apply(self, df):
-        # 假設 StockID 格式能區分市場
-        # 此處簡化邏輯，實務上需依 StockID 前綴判斷
+        df['Limit_Price'] = (df['PrevClose'] * 1.1).round(2)
+        # 中國 A 股通常以 9.5% 作為漲停門檻
         df['is_limit_up'] = df['Ret_Day'] >= 0.095
+        df['is_limit_down'] = df['Ret_Day'] <= -0.095
         df['is_anomaly'] = df['Ret_Day'].abs() > 0.22
-        return df
-
-class KoreaRules(BaseRules):
-    """
-    韓國市場規則：LMS 制度 ±30%。
-    """
-    def apply(self, df):
-        df['is_limit_up'] = df['Ret_Day'] >= 0.295
-        df['is_anomaly'] = df['Ret_Day'].abs() > 0.35
         return df
