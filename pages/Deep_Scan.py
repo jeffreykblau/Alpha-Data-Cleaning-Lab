@@ -21,6 +21,17 @@ db_map = {
 }
 target_db = db_map[market_option]
 
+# 定義各市場連結範本
+url_templates = {
+    "TW": "https://www.wantgoo.com/stock/{s}/technical-chart",
+    "US": "https://www.tradingview.com/symbols/{s}/",
+    "JP": "https://jp.tradingview.com/symbols/TSE-{s}/",
+    "CN": "https://panyi.eastmoney.com/pc_sc_kline.html?s={s}",
+    "HK": "https://www.tradingview.com/symbols/HKEX-{s}/",
+    "KR": "https://www.tradingview.com/symbols/KRX-{s}/"
+}
+current_url_base = url_templates.get(market_option, "https://google.com/search?q={s}")
+
 if not os.path.exists(target_db):
     st.error(f"請先回到首頁同步 {market_option} 數據庫")
     st.stop()
@@ -30,9 +41,10 @@ if not os.path.exists(target_db):
 def get_full_stock_info(_db_path):
     conn = sqlite3.connect(_db_path)
     try:
-        df = pd.read_sql("SELECT symbol, name FROM stock_info", conn)
+        # 增加讀取 sector 欄位以利後續使用
+        df = pd.read_sql("SELECT symbol, name, sector FROM stock_info", conn)
     except:
-        df = pd.DataFrame(columns=['symbol', 'name'])
+        df = pd.DataFrame(columns=['symbol', 'name', 'sector'])
     conn.close()
     return df
 
@@ -66,14 +78,13 @@ try:
         sample_q = f"SELECT Overnight_Alpha, Next_1D_Max FROM cleaned_daily_base WHERE StockID = '{target_symbol}' AND Prev_LU = 1"
         samples = pd.read_sql(sample_q, conn)
         
-        # 獲取同產業公司名單 (預備給 AI)
+        # 獲取同產業公司名單
         temp_info_q = f"SELECT sector FROM stock_info WHERE symbol = '{target_symbol}'"
         sector_res = pd.read_sql(temp_info_q, conn)
         sector_name = sector_res.iloc[0,0] if not sector_res.empty else "未知"
         
-        peer_q = f"SELECT symbol, name FROM stock_info WHERE sector = '{sector_name}' AND symbol != '{target_symbol}' LIMIT 15"
+        peer_q = f"SELECT symbol, name FROM stock_info WHERE sector = '{sector_name}' AND symbol != '{target_symbol}' LIMIT 12"
         peers_df = pd.read_sql(peer_q, conn)
-        peers_list = (peers_df['symbol'] + " " + peers_df['name']).tolist()
         
         conn.close()
 
@@ -133,42 +144,59 @@ try:
                     st.info("該股五年內無漲停紀錄。")
 
             with c2:
-                st.subheader("🔗 同產業公司")
-                if peers_list:
-                    st.write(", ".join(peers_list[:10]))
+                st.subheader("🔗 同產業聯動 (點擊跳轉圖表)")
+                if not peers_df.empty:
+                    # 生成帶超連結的 Markdown 字串
+                    linked_peers = []
+                    for _, row in peers_df.iterrows():
+                        p_sym = row['symbol']
+                        p_name = row['name']
+                        # 處理台灣代號後綴 (2330.TW -> 2330)
+                        clean_id = p_sym.split('.')[0]
+                        url = current_url_base.format(s=clean_id)
+                        linked_peers.append(f"• [{p_sym} {p_name}]({url})")
+                    
+                    # 顯示兩排顯示，增加易讀性
+                    st.markdown("\n".join(linked_peers))
                 else:
                     st.write("暫無相關產業資料")
 
-            # --- 佈局三：AI 專家報告 (含同概念股分析) ---
+            # --- 佈局三：AI 專家報告 ---
             st.divider()
             if st.button("🚀 生成 AI 專家深度診斷報告 (含同概念股名單)"):
                 if "GEMINI_API_KEY" in st.secrets:
                     try:
                         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-                        # 自動偵測可用模型
                         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                         target_model = next((c for c in ['models/gemini-1.5-flash', 'gemini-1.5-flash', 'models/gemini-pro'] if c in available_models), available_models[0])
                         model = genai.GenerativeModel(target_model)
                         
+                        # 在指令中要求 AI 也要輸出超連結格式
                         prompt = f"""
                         你是一位資深的股市投研專家。請針對股票 {selected} 進行深度分析：
-                        1. **核心題材與概念**：這檔股票屬於哪些熱門題材（例如：CPO、液冷、半導體特化等）？
-                        2. **同概念股名單**：除了資料庫標註的「{sector_name}」，請根據市場邏輯列出 3-5 家具備相同題材的台灣上市公司。
-                        3. **隔日沖續航力**：
-                           - 5年漲停次數：{int(hist['lu'] or 0)}
-                           - 隔日開盤溢價均值：{(hist['ov'] or 0)*100:.2f}%
-                           - 盤中最高期望值：{(hist['nxt'] or 0)*100:.2f}%
-                        請給出投資建議，並判斷該股在族群中的地位。
+                        1. **核心題材與概念**：這檔股票目前市場熱門題材是什麼？
+                        2. **同概念股名單**：除了「{sector_name}」，請根據市場邏輯列出 3-5 家具備相同題材的公司。
+                        
+                        🚨 **超連結強制指令** 🚨
+                        分析中提到的所有公司名與代號，請務必轉換為 Markdown 連結。
+                        範例：[2330 台積電]({current_url_base.format(s='2330')})
+                        連結範本為：{current_url_base} (請將 {{s}} 替換為該股純數字代號)
+
+                        3. **隔日沖與投資建議**：
+                           - 歷史漲停次數：{int(hist['lu'] or 0)}
+                           - 隔日溢價均值：{(hist['ov'] or 0)*100:.2f}%
+                        請給出具體判斷。
                         """
                         
-                        with st.spinner(f"AI 正在聯想同概念族群並分析數據..."):
+                        with st.spinner(f"AI 正在掃描題材並自動配置連結..."):
                             response = model.generate_content(prompt)
                             st.info(f"### 🤖 AI 深度診斷：{selected}")
+                            # st.markdown 會自動渲染 AI 回傳的連結
                             st.markdown(response.text)
                     except Exception as e:
                         st.error(f"AI 分析失敗: {e}")
                 else:
-                    st.warning("請先設定 GEMINI_API_KEY")
+                    st.warning("請先在 .streamlit/secrets.toml 中設定 GEMINI_API_KEY")
 
 except Exception as e:
     st.error(f"模組執行異常: {e}")
