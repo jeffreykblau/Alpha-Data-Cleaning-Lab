@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import sqlite3
 import pandas as pd
@@ -13,9 +14,7 @@ from core_engine import AlphaCoreEngine
 
 class AlphaDataPipeline:
     def __init__(self, market_abbr):
-        # 例如傳入 "TW"，則轉換為大寫
         self.market_abbr = market_abbr.upper()
-        # 自動生成的資料庫檔名：例如 tw_stock_warehouse.db
         self.db_name = f"{self.market_abbr.lower()}_stock_warehouse.db"
         self.creds = self._load_credentials()
         self.service = build('drive', 'v3', credentials=self.creds)
@@ -27,9 +26,6 @@ class AlphaDataPipeline:
         return Credentials.from_service_account_info(json.loads(creds_json))
 
     def find_file_id_by_name(self, filename):
-        """
-        🚀 透過檔名在 Google Drive 搜尋檔案 ID
-        """
         query = f"name = '{filename}' and trashed = false"
         results = self.service.files().list(q=query, fields="files(id, name)").execute()
         files = results.get('files', [])
@@ -49,14 +45,9 @@ class AlphaDataPipeline:
         print(f"✅ {self.db_name} 下載成功")
 
     def _ensure_schema_upgraded(self, conn):
-        """
-        🚀 確保資料庫 Schema 包含炸板分析所需的欄位 (Ret_High)
-        """
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(cleaned_daily_base)")
         columns = [column[1] for column in cursor.fetchall()]
-        
-        # 如果沒有 Ret_High 欄位，則新增 (這能解決 Deep_Scan.py 報錯問題)
         if 'Ret_High' not in columns:
             print(f"🛠️  正在為 {self.market_abbr} 資料庫新增 Ret_High 欄位...")
             try:
@@ -68,7 +59,6 @@ class AlphaDataPipeline:
 
     def upload_db(self):
         file_id = self.find_file_id_by_name(self.db_name)
-        # 🚀 使用 Resumable 技術處理大檔案上傳 (解決美國市場 Timeout 問題)
         media = MediaFileUpload(self.db_name, mimetype='application/octet-stream', resumable=True)
         request = self.service.files().update(fileId=file_id, media_body=media)
         
@@ -81,15 +71,52 @@ class AlphaDataPipeline:
         print(f"✅ {self.market_abbr} 雲端同步成功")
 
     def run_process(self):
+        """
+        🚀 整合後的執行流程：下載 -> 偵察日期 -> 計算 -> 上傳
+        """
         # 1. 下載雲端 DB
         self.download_db()
         
         conn = sqlite3.connect(self.db_name)
         try:
-            # 2. 自動升級資料庫結構 (新增炸板欄位)
+            # 💡 [新增] 資料狀態偵察：檢查原始資料 vs 加工資料
+            cursor = conn.cursor()
+            
+            # 檢查原始價格 (stock_prices)
+            cursor.execute("SELECT MAX(date) FROM stock_prices")
+            raw_date = cursor.fetchone()[0]
+            
+            # 檢查加工特徵 (cleaned_daily_base)
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cleaned_daily_base'")
+            if cursor.fetchone():
+                # 偵測日期欄位（處理不同市場可能叫 'date' 或 '日期' 的情況）
+                cursor.execute("PRAGMA table_info(cleaned_daily_base)")
+                cols = [c[1] for c in cursor.fetchall()]
+                date_col = '日期' if '日期' in cols else 'date'
+                
+                cursor.execute(f"SELECT MAX([{date_col}]) FROM cleaned_daily_base")
+                clean_date_raw = cursor.fetchone()[0]
+                # 處理帶有時分秒的字串 (例如 2025-12-24 00:00:00 -> 2025-12-24)
+                clean_date = str(clean_date_raw).split(' ')[0] if clean_date_raw else "N/A"
+            else:
+                clean_date = "資料表尚未建立"
+
+            print("\n" + "="*50)
+            print(f"🔍 [{self.market_abbr}] 數據一致性偵察：")
+            print(f"📅 原始股價 (stock_prices) 最新日期: {raw_date}")
+            print(f"📊 加工指標 (cleaned_daily_base) 最新日期: {clean_date}")
+            
+            if raw_date == clean_date:
+                print(f"✅ 兩者日期一致。")
+            else:
+                print(f"🚀 偵測到日期差！準備將加工表更新至 {raw_date}")
+            print("="*50 + "\n")
+
+            # 2. 自動升級資料庫結構
             self._ensure_schema_upgraded(conn)
 
-            # 3. 執行核心精煉引擎 (計算指標並填入 Ret_High)
+            # 3. 執行核心精煉引擎 (計算技術指標、Alpha 標籤等)
+            print(f"⚙️  啟動 AlphaCoreEngine 進行數據精煉...")
             rules = MarketRuleRouter.get_rules(self.market_abbr)
             engine = AlphaCoreEngine(conn, rules, self.market_abbr)
             summary_msg = engine.execute()
@@ -100,8 +127,7 @@ class AlphaDataPipeline:
             # 4. 同步上傳回雲端
             self.upload_db()
             
-            # 5. 生成摘要報告 (修正檔名以符合 YAML 的 Artifacts 搜尋路徑)
-            # 例如: summary_tw_stock_warehouse.txt
+            # 5. 生成摘要報告
             summary_file = f"summary_{self.db_name.replace('.db', '')}.txt"
             with open(summary_file, "w", encoding="utf-8") as f:
                 f.write(str(summary_msg))
@@ -116,7 +142,6 @@ class AlphaDataPipeline:
             raise e
 
 if __name__ == "__main__":
-    # 從 GitHub Actions 的環境變數中讀取市場代號 (例如 TW)
     target_market = os.environ.get("MARKET_TYPE")
     if not target_market:
         print("❌ 錯誤：未設定 MARKET_TYPE")
