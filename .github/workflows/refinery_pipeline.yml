@@ -25,6 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 決定執行的市場列表
         market_db: ${{ fromJSON( github.event.inputs.manual_market == 'all' || github.event_name == 'schedule' && '["tw_stock_warehouse", "jp_stock_warehouse", "us_stock_warehouse", "cn_stock_warehouse", "kr_stock_warehouse", "hk_stock_warehouse"]' || format('["{0}"]', github.event.inputs.manual_market) ) }}
     
     steps:
@@ -39,14 +40,15 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # 直接使用 requirements.txt 安裝最保險
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pandas numpy google-api-python-client google-auth python-dotenv requests google-generativeai
 
       - name: Run Pipeline
         env:
           GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # 確保 AI 摘要功能有 API Key (若 core_engine 有用到)
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} 
         run: |
+          # 提取簡稱並轉大寫 (例如: tw_stock_warehouse -> TW)
           export MARKET_TYPE=$(echo "${{ matrix.market_db }}" | cut -d'_' -f1 | tr '[:lower:]' '[:upper:]')
           echo "🚀 啟動任務: $MARKET_TYPE"
           python main_pipeline.py
@@ -55,13 +57,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: summary-${{ matrix.market_db }}
-          path: summary_${{ matrix.market_db }}.txt
+          # 🚀 使用萬用字元確保抓到產出的 summary 文字檔
+          path: "summary_*.txt"
           retention-days: 1
 
   report-summary:
     needs: refine-markets
     runs-on: ubuntu-latest
-    if: always()
+    # 即使部分市場精煉失敗，仍嘗試發送現有的報告
+    if: always() 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -74,20 +78,22 @@ jobs:
       - name: Install Dependencies for Reporter
         run: |
           python -m pip install --upgrade pip
-          # Reporter 只需要這三個套件，我們強制安裝確保萬無一失
           pip install requests python-dotenv pandas
 
       - name: Download All Summaries
         uses: actions/download-artifact@v4
         with:
-          path: all_summaries
+          # 🚀 下載所有以 summary- 開頭的 Artifact 並合併到當前目錄
           pattern: summary-*
           merge-multiple: true
+
+      - name: Verify Files
+        run: |
+          echo "🔎 目前下載到的摘要檔案清單："
+          ls -R summary_*.txt || echo "❌ 找不到任何摘要檔案"
 
       - name: Send Final Telegram Report
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          # 執行報告程式
-          python batch_reporter.py
+        run: python batch_reporter.py
