@@ -26,7 +26,7 @@ db_config = {
     "KR": "kr_stock_warehouse.db"
 }
 
-# --- 3. 自動下載邏輯 (解決缺檔問題) ---
+# --- 3. 自動下載邏輯 ---
 def download_missing_dbs():
     creds_json = st.secrets.get("GDRIVE_SERVICE_ACCOUNT")
     if not creds_json:
@@ -81,9 +81,7 @@ def fetch_global_strong_stocks(markets):
         db = db_config[m]
         conn = sqlite3.connect(db)
         try:
-            # 獲取最新日
             latest = pd.read_sql("SELECT MAX(日期) FROM cleaned_daily_base", conn).iloc[0,0]
-            # 篩選漲幅 >= 10% (包含台灣上市櫃與興櫃)
             query = f"""
             SELECT p.StockID, i.name as Name, i.sector as Sector, p.Ret_Day
             FROM cleaned_daily_base p
@@ -104,14 +102,12 @@ if available_markets:
     global_df = fetch_global_strong_stocks(available_markets)
     
     if not global_df.empty:
-        # 處理缺失產業
         global_df['Sector'] = global_df['Sector'].fillna('未分類/香港/興櫃')
 
         col_l, col_r = st.columns([1.2, 1])
         
         with col_l:
             st.subheader("📊 跨國強勢產業熱點")
-            # 統計各產業在各國的家數
             chart_df = global_df.groupby(['Sector', 'Market']).size().reset_index(name='Count')
             fig = px.bar(
                 chart_df, x='Count', y='Sector', color='Market', orientation='h',
@@ -133,21 +129,47 @@ if available_markets:
         st.divider()
         if st.button("🤖 啟動全球產業趨勢 AI 診斷"):
             api_key = st.secrets.get("GEMINI_API_KEY")
-            if api_key:
-                genai.configure(api_key=api_key)
-                all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                target_model = next((m for m in ['models/gemini-1.5-flash', 'gemini-1.5-flash'] if m in all_models), all_models[0])
-                model = genai.GenerativeModel(target_model)
-                
-                # 準備 AI 提示詞
-                sector_summary = global_df.groupby(['Sector', 'Market']).size().to_string()
-                prompt = f"你是一位宏觀投資專家，請分析今日全球漲幅超過10%的股票分佈：\n{sector_summary}\n\n1. 哪些產業出現跨國聯動現象？\n2. 這些現象背後的全球趨勢為何？\n3. 風險建議。"
-                
-                with st.spinner("AI 正在比對數據..."):
-                    response = model.generate_content(prompt)
-                    st.info("### 🤖 全球趨勢分析報告")
-                    st.markdown(response.text)
+            if not api_key:
+                st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
+            else:
+                try:
+                    genai.configure(api_key=api_key)
+                    all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                    target_model = next((m for m in ['models/gemini-1.5-flash', 'gemini-1.5-flash'] if m in all_models), all_models[0])
+                    model = genai.GenerativeModel(target_model)
+                    
+                    sector_summary = global_df.groupby(['Sector', 'Market']).size().to_string()
+                    prompt = f"""你是一位宏觀投資專家，請分析今日全球漲幅超過10%的股票分佈：
+{sector_summary}
+
+1. 哪些產業出現跨國聯動現象？
+2. 這些現象背後的全球趨勢為何？
+3. 風險建議。"""
+                    
+                    with st.spinner(f"AI 正在比對全球數據 (模型: {target_model})..."):
+                        response = model.generate_content(prompt)
+                        st.info("### 🤖 全球趨勢分析報告")
+                        st.markdown(response.text)
+                        
+                        # --- 新增：提問詞複製區塊 ---
+                        st.divider()
+                        st.subheader("📋 複製提問詞 (至 ChatGPT / Claude)")
+                        st.caption("您可以複製下方指令，並將數據提供給其他 AI 進行深入交叉驗證：")
+                        st.code(prompt.strip(), language="text")
+                except Exception as e:
+                    st.error(f"AI 分析失敗: {e}")
     else:
         st.warning("今日各國暫無漲幅 > 10% 的股票數據。")
 else:
     st.error("請在側邊欄點擊「一鍵同步六國資料庫」以載入數據。")
+
+# --- 6. 底部快速連結 (Footer) ---
+st.divider()
+st.markdown("### 🔗 快速資源連結")
+col_link1, col_link2, col_link3 = st.columns(3)
+with col_link1:
+    st.page_link("https://vocus.cc/article/694f813afd8978000101e75a", label="⚙️ 環境與 AI 設定教學", icon="🛠️")
+with col_link2:
+    st.page_link("https://vocus.cc/article/694f88bdfd89780001042d74", label="📖 儀表板功能詳解", icon="📊")
+with col_link3:
+    st.page_link("https://github.com/grissomlin/Alpha-Data-Cleaning-Lab", label="💻 GitHub 專案原始碼", icon="🐙")
