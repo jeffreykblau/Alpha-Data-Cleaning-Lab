@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       manual_market:
-        description: '選擇手動執行的市場 (選 all 則執行六國)'
+        description: '選擇手動執行的市場'
         required: true
         default: 'all'
         type: choice
@@ -25,8 +25,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 根據輸入或排程決定執行的市場列表
-        market_db: ${{ fromJSON( github.event.inputs.manual_market == 'all' || github.event_name == 'schedule' && '["tw_stock_warehouse", "jp_stock_warehouse", "us_stock_warehouse", "cn_stock_warehouse", "kr_stock_warehouse", "hk_stock_warehouse"]' || format('["{0}"]', github.event.inputs.manual_market) ) }}
+        # 🚀 簡化後的邏輯：確保列表一定會生成
+        market_db: ${{ 
+          (github.event.inputs.manual_market == 'all' || github.event_name == 'schedule') && 
+          fromJSON('["tw_stock_warehouse", "jp_stock_warehouse", "us_stock_warehouse", "cn_stock_warehouse", "kr_stock_warehouse", "hk_stock_warehouse"]') || 
+          fromJSON(format('["{0}"]', github.event.inputs.manual_market)) 
+          }}
     
     steps:
       - name: Checkout Code
@@ -45,33 +49,24 @@ jobs:
       - name: Run Pipeline
         env:
           GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} 
         run: |
-          # 提取市場代碼並轉為大寫 (例如 tw -> TW)
+          # 提取簡稱並轉大寫
           export MARKET_TYPE=$(echo "${{ matrix.market_db }}" | cut -d'_' -f1 | tr '[:lower:]' '[:upper:]')
           echo "🚀 啟動任務: $MARKET_TYPE"
           python main_pipeline.py
-          
-          # 🚀 除錯步驟：確認本地是否真的產生了 summary 檔案
-          echo "🔎 檢查目前目錄下的 txt 檔案："
-          ls -l summary_*.txt || echo "❌ 警告：找不到產出的 summary 檔案"
 
       - name: Upload Summary Artifact
-        # 即使 Pipeline 報錯也嘗試上傳已產出的摘要
-        if: success() || failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          # 這裡的 name 必須唯一，我們加上市場名稱
           name: summary-${{ matrix.market_db }}
-          # 🚀 使用萬用字元確保抓到產出的 summary 文字檔
-          path: "summary_*.txt"
+          path: summary_*.txt
           retention-days: 1
 
   report-summary:
     needs: refine-markets
     runs-on: ubuntu-latest
-    # 確保無論精煉任務成功與否都執行報告（前提是有下載到檔案）
-    if: always() 
+    if: always()
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -81,22 +76,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies for Reporter
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests python-dotenv pandas
+      - name: Install Dependencies
+        run: pip install requests python-dotenv pandas
 
       - name: Download All Summaries
         uses: actions/download-artifact@v4
         with:
-          # 🚀 下載所有以 summary- 開頭的 Artifact 並合併
           pattern: summary-*
           merge-multiple: true
-
-      - name: Verify Files
-        run: |
-          echo "🔎 目前下載到的摘要檔案清單："
-          ls -l summary_*.txt || echo "❌ 找不到任何摘要檔案"
 
       - name: Send Final Telegram Report
         env:
