@@ -10,7 +10,7 @@ import re
 # 1. 頁面配置
 st.set_page_config(page_title="AI 綜合個股深度掃描", layout="wide")
 
-# 2. 側邊欄與資料庫連線
+# 2. 市場與資料庫設定
 market_option = st.sidebar.selectbox("🚩 選擇市場", ("TW", "JP", "CN", "US", "HK", "KR"), key="scan_market")
 db_map = {
     "TW": "tw_stock_warehouse.db", 
@@ -22,7 +22,6 @@ db_map = {
 }
 target_db = db_map[market_option]
 
-# 定義各市場連結範本
 url_templates = {
     "TW": "https://www.wantgoo.com/stock/{s}/technical-chart",
     "US": "https://www.tradingview.com/symbols/{s}/",
@@ -54,24 +53,24 @@ try:
     st.title("🔍 AI 綜合個股深度掃描")
     st.write("本模組整合 **動能、風險、隔日沖妖性、族群概念** 四大維度。")
 
-    selected = st.selectbox("請搜尋代碼或名稱", options=stock_df['display'].tolist(), index=None)
+    selected = st.selectbox("請搜尋代碼或名稱 (例如輸入 2330 或 信大)", options=stock_df['display'].tolist(), index=None)
 
     if selected:
         target_symbol = selected.split(" ")[0]
         conn = sqlite3.connect(target_db)
         
-        # 抓取基礎數據
+        # --- 數據抓取邏輯 ---
         scan_q = f"SELECT * FROM cleaned_daily_base WHERE StockID = '{target_symbol}' ORDER BY 日期 DESC LIMIT 1"
         data_all = pd.read_sql(scan_q, conn)
         
         hist_q = f"""
         SELECT COUNT(*) as t, SUM(is_limit_up) as lu, 
-        AVG(CASE WHEN Prev_LU=1 THEN Overnight_Alpha END) as ov, 
-        AVG(CASE WHEN Prev_LU=1 THEN Next_1D_Max END) as nxt 
+        AVG(CASE WHEN Prev_LU=1 THEN Overnight_Alpha END) as ov,
+        AVG(CASE WHEN Prev_LU=1 THEN Next_1D_Max END) as nxt
         FROM cleaned_daily_base WHERE StockID = '{target_symbol}'
         """
         hist = pd.read_sql(hist_q, conn).iloc[0]
-        
+
         sample_q = f"SELECT Overnight_Alpha, Next_1D_Max FROM cleaned_daily_base WHERE StockID = '{target_symbol}' AND Prev_LU = 1"
         samples = pd.read_sql(sample_q, conn)
         
@@ -84,27 +83,70 @@ try:
 
         if not data_all.empty:
             data = data_all.iloc[0]
+            
+            # --- 佈局一：雷達圖與核心指標 ---
             st.divider()
+            col_left, col_right = st.columns([1, 1])
             
-            # --- 佈局一：核心指標 ---
-            c_l, c_r = st.columns(2)
-            with c_l:
-                st.subheader("📊 關鍵指標")
-                st.write(f"**最新價格**：{data['收盤']}")
-                st.write(f"**20D 波動**：{data.get('volatility_20d', 0)*100:.2f}%")
+            with col_left:
+                st.subheader("📊 多維度體質評分")
+                # 取得動能指標
+                r5 = data.get('Ret_5D', 0)
+                r20 = data.get('Ret_20D', 0)
+                r200 = data.get('Ret_200D', 0)
+                vol = data.get('volatility_20d', 0)
+                dd = data.get('drawdown_after_high_20d', 0)
+
+                categories = ['短線動能', '中線動能', '長線動能', '穩定度', '防禦力']
+                plot_values = [
+                    min(max(r5 * 5 + 0.5, 0.1), 1),
+                    min(max(r20 * 2 + 0.5, 0.1), 1),
+                    min(max(r200 + 0.5, 0.1), 1),
+                    max(1 - vol * 2, 0.1),
+                    max(1 + dd, 0.1)
+                ]
+                fig = go.Figure(data=go.Scatterpolar(r=plot_values, theta=categories, fill='toself', name=selected))
+                fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])), showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col_right:
+                st.subheader("📋 當前關鍵指標")
+                st.write(f"**最新收盤**：{data['收盤']}")
+                st.write(f"**所屬產業**：{sector_name}")
+                st.write(f"**20D 波動率**：{vol*100:.2f}%")
+                st.write(f"**5年漲停次數**：{int(hist['lu'] or 0)} 次")
+                st.write(f"**平均開盤溢價**：{(hist['ov'] or 0)*100:.2f}%")
+                st.write(f"**最高點期望值**：{(hist['nxt'] or 0)*100:.2f}%")
+
+            # --- 佈局二：⚡ 隔日沖與族群聯動 ---
+            st.divider()
+            c1, c2 = st.columns([2, 1])
             
-            with c_r:
+            with c1:
+                st.subheader("⚡ 隔日沖慣性分布")
+                if not samples.empty:
+                    fig_hist = px.histogram(
+                        samples, x=samples['Overnight_Alpha']*100, 
+                        nbins=15, title="漲停後隔日開盤利潤分布 (%)",
+                        labels={'x': '利潤 %', 'count': '次數'},
+                        color_discrete_sequence=['#FFD700']
+                    )
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                else:
+                    st.info("該股五年內無漲停紀錄，故無隔日沖樣本。")
+
+            with c2:
                 st.subheader("🔗 同產業聯動 (點擊看圖)")
                 if not peers_df.empty:
                     linked_peers = []
                     for _, row in peers_df.iterrows():
                         p_sym = row['symbol']
                         clean_id = p_sym.split('.')[0]
-                        url = current_url_base.replace("{s}", clean_id) # 安全替換
+                        url = current_url_base.replace("{s}", clean_id)
                         linked_peers.append(f"• [{p_sym} {row['name']}]({url})")
                     st.markdown("\n".join(linked_peers))
                 else:
-                    st.write("暫無資料")
+                    st.write("暫無相關資料")
 
             # --- 佈局三：AI 專家報告 (Python 強制連結邏輯) ---
             st.divider()
@@ -114,12 +156,7 @@ try:
                         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
                         model = genai.GenerativeModel('gemini-1.5-pro')
                         
-                        prompt = f"""
-                        你是股市專家，請針對股票 {selected} 進行深度分析。
-                        1. **核心題材**：分析該股熱門概念。
-                        2. **同概念股名單**：除資料庫標註的「{sector_name}」外，請根據市場邏輯列出 3-5 家相關標的。
-                        3. **隔日沖數據參考**：5年內漲停{int(hist['lu'])}次，溢價期望值{(hist['ov'] or 0)*100:.2f}%。
-                        """
+                        prompt = f"你是投研專家。分析股票 {selected}：題材、聯動性與策略。該股屬於 {sector_name} 產業。歷史漲停{int(hist['lu'])}次，溢價均值{(hist['ov'] or 0)*100:.2f}%。"
                         
                         with st.spinner("AI 正在精煉數據並生成連結..."):
                             response = model.generate_content(prompt)
@@ -127,22 +164,20 @@ try:
 
                             # 🚀 健壯的 Regex 替換邏輯
                             def make_stock_link(match):
-                                symbol_full = match.group(0) # 例如 2330.TW
-                                symbol_num = match.group(1)  # 例如 2330
+                                symbol_full = match.group(0) 
+                                symbol_num = match.group(1)  
                                 link_url = current_url_base.replace("{s}", symbol_num)
                                 return f"[{symbol_full}]({link_url})"
 
-                            # 支持多國後綴的 Regex
                             pattern = r"(\d{3,6})\.(?:TW|TWO|SS|SZ|T|HK|KS|N|O|Q)"
                             final_linked_text = re.sub(pattern, make_stock_link, raw_text)
 
                             st.info(f"### 🤖 AI 深度診斷：{selected}")
                             st.markdown(final_linked_text)
-                            
                     except Exception as e:
                         st.error(f"AI 分析失敗: {e}")
                 else:
-                    st.warning("請先設定 GEMINI_API_KEY")
+                    st.warning("請設定 GEMINI_API_KEY")
 
 except Exception as e:
     st.error(f"系統異常: {e}")
