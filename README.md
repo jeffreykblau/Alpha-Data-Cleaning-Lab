@@ -61,7 +61,7 @@ GEMINI_API_KEY = "您的_Gemini_API_Key" #
 # Google Drive 資料庫同步 (選配件)
 GDRIVE_SERVICE_ACCOUNT = "您的_Service_Account_JSON_內容" #
 
-
+'''
 
 這是一份為您重新整理、將「支持贊助」與「免責聲明」緊密結合並優化後的完整版 README.md。
 
