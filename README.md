@@ -1,56 +1,154 @@
 # 🚀 Alpha-Data-Cleaning-Lab
 
-**Alpha-Data-Cleaning-Lab** 是一個基於 Streamlit 開發的全球股市大數據分析儀表板。結合了 Google Gemini AI 的強大診斷能力，幫助投資者從雜亂的市場數據中快速萃取關鍵洞察。
+**Alpha-Data-Cleaning-Lab** 是一個基於 Streamlit 開發的全球股市大數據分析儀表板。結合了 Google Gemini AI 的強大診斷能力，協助投資者從海量數據中快速萃取關鍵洞察。
+
+### ✍️ 關於這個專案 (開發者的真心話)
+這是一個**普通上班族**利用業餘時間開發的專案。初衷是為了簡化日常投資分析的瑣碎流程。
+
+在數據處理上，我已經**盡可能地進行資料清洗（Data Cleaning）**，力求將資料洗得乾淨、正確；但受限於個人開發資源與原始數據源的品質，難免會有力有未逮之處。這不是專業機器的產物，而是純手工調教的心血。
+
+**⚠️ 關於資料範圍：**
+受限於 GitHub 儲存空間與原始資料結構的影響，本儀表板數據目前僅提供 **2023 年至最新交易日** 的資料。這對於短中線分析已具備足夠參考價值。
 
 ---
 
-## 📖 快速上手與文件
+## 🛠️ 必要的前置作業
 
-為了讓您能更順利地架設並使用本系統，建議先閱讀以下在方格子（vocus）上的詳細教學：
+本專案主要負責「前端呈現與 AI 診斷」，並不包含爬蟲抓取功能。您**必須搭配以下資料庫專案**才能正常運作：
 
-* 🛠️ **環境與 AI 設定教學**：[點此閱讀文章](https://vocus.cc/article/694f813afd8978000101e75a)
-* 📊 **儀表板功能詳解**：[點此閱讀文章](https://vocus.cc/article/694f88bdfd89780001042d74)
+* **資料來源 Repo**：[global-stock-data-warehouse](https://github.com/grissomlin/global-stock-data-warehouse)
+  *(請先依照該專案說明生成各國市場的 `.db` 檔案，並放置於本專案目錄下，否則儀表板將無資料可讀)*
 
 ---
 
-## ✨ 核心功能
+## 📖 快速上手與教學
 
-### 🌎 全球強勢股產業連動監測 (`Global_Trend.py`)
-* **跨國數據同步**：支援 TW, US, CN, JP, HK, KR 六大市場。
-* **資金流向偵測**：篩選漲幅 > 10% 的個股，並按產業分類呈現。
-* **AI 宏觀診斷**：利用 Gemini 分析全球產業趨勢與聯動效應。
+為了讓您能更順利地架設並使用本系統，建議參考以下在方格子（vocus）上的圖文教學：
 
-### 🔍 AI 綜合個股深度掃描 (`Deep_Scan.py`)
-* **多維體質評分**：自動生成動能、穩定度、防禦力的雷達圖。
-* **股性大數據**：統計 2023 至今的成功漲停次數與「炸板」紀錄。
-* **專家診斷報告**：AI 針對個股籌碼壓力與妖性給予短線操作建議。
+* ⚙️ **環境與 AI 設定教學**：[點此閱讀文章](https://vocus.cc/article/694f813afd8978000101e75a)
+* 📖 **儀表板功能詳解**：[點此閱讀文章](https://vocus.cc/article/694f88bdfd89780001042d74)
+
+---
+
+## ✨ 核心分析功能
+
+### 🌎 全球強勢股連動 (`Global_Trend.py`)
+* **跨國同步**：支援 TW, US, CN, JP, HK, KR 六大市場。
+* **AI 宏觀診斷**：自動分析全球產業資金流向與跨國聯動現象。
+
+### 🔍 個股 AI 深度掃描 (`Deep_Scan.py`)
+* **雷達圖分析**：動能、穩定度、防禦力三維評分。
+* **股性統計**：2023 至今的漲停次數、炸板率與隔日溢價期望值。
 
 ### 🚀 今日漲停戰情室 (`Today_Limit_Up.py`)
-* **連板追蹤**：自動標記個股連板天數。
-* **溢價期望值**：計算歷史漲停後隔日的開盤溢價均值。
-* **同族群聯動**：即時顯示同產業中其他強勢個股。
+* **連板追蹤**：即時掌握市場標竿股。
+* **短線風控**：AI 針對籌碼壓力與「妖性」給予明日操作建議。
 
-### 🛡️ 風險指標深度掃描 (`Risk_Metrics.py`)
-* **最大回撤分析**：視覺化呈現市場 10D/20D 的拉回風險分佈。
-* **抗跌韌性區**：自動過濾出月報酬為正且回撤極小的穩定標的。
-
-### 📈 長周期與滾動漲跌分析 (`Period_Analysis.py`)
-* **九宮格動能分佈**：一次掌握 5D/20D/200D 與周月年累計報酬。
-* **強勢分箱清單**：將市場個股分類為「噴發」、「強勢」至「慘跌」等級。
+### 🛡️ 風險指標診斷 (`Risk_Metrics.py`)
+* **回撤分析**：視覺化呈現 10D/20D 的拉回風險。
+* **抗跌韌性區**：篩選月報酬為正且極度穩定的避險標的。
 
 ---
 
-## ⚙️ 環境變數設定 (.env / Secrets)
+## ⚙️ 環境變數設定
 
-請在專案根目錄建立 `.env` 檔案，或在 Streamlit Cloud 的 Secrets 中設定以下變數：
+請在專案中設定以下變數（`.env` 或 Streamlit Secrets）：
 
 ```toml
 # 核心大腦 (必填)
-GEMINI_API_KEY = "您的_Gemini_API_Key"
+GEMINI_API_KEY = "您的_Gemini_API_Key" #
 
-# Google Drive 資料庫同步 (選配)
-GDRIVE_SERVICE_ACCOUNT = "您的_Service_Account_JSON_字串"
+# Google Drive 資料庫同步 (選配件)
+GDRIVE_SERVICE_ACCOUNT = "您的_Service_Account_JSON_內容" #
 
-# 通知系統 (選配)
-TELEGRAM_BOT_TOKEN = "您的_Telegram_Token"
-RESEND_API_KEY = "您的_Resend_API_Key"
+
+
+這是一份為您重新整理、將「支持贊助」與「免責聲明」緊密結合並優化後的完整版 README.md。
+
+我已將您強調的上班族開發心聲、搭配資料庫 Repo 說明，以及資料範圍限制（2023 至今）全部整合進去。
+
+Markdown
+
+# 🚀 Alpha-Data-Cleaning-Lab
+
+**Alpha-Data-Cleaning-Lab** 是一個基於 Streamlit 開發的全球股市大數據分析儀表板。結合了 Google Gemini AI 的強大診斷能力，協助投資者從海量數據中快速萃取關鍵洞察。
+
+### ✍️ 關於這個專案 (開發者的真心話)
+這是一個**普通上班族**利用業餘時間開發的專案。初衷是為了簡化日常投資分析的瑣碎流程。
+
+在數據處理上，我已經**盡可能地進行資料清洗（Data Cleaning）**，力求將資料洗得乾淨、正確；但受限於個人開發資源與原始數據源的品質，難免會有力有未逮之處。這不是專業機器的產物，而是純手工調教的心血。
+
+**⚠️ 關於資料範圍：**
+受限於 GitHub 儲存空間與原始資料結構的影響，本儀表板數據目前僅提供 **2023 年至最新交易日** 的資料。這對於短中線分析已具備足夠參考價值。
+
+---
+
+## 🛠️ 必要的前置作業
+
+本專案主要負責「前端呈現與 AI 診斷」，並不包含爬蟲抓取功能。您**必須搭配以下資料庫專案**才能正常運作：
+
+* **資料來源 Repo**：[global-stock-data-warehouse](https://github.com/grissomlin/global-stock-data-warehouse)
+  *(請先依照該專案說明生成各國市場的 `.db` 檔案，並放置於本專案目錄下，否則儀表板將無資料可讀)*
+
+---
+
+## 📖 快速上手與教學
+
+為了讓您能更順利地架設並使用本系統，建議參考以下在方格子（vocus）上的圖文教學：
+
+* ⚙️ **環境與 AI 設定教學**：[點此閱讀文章](https://vocus.cc/article/694f813afd8978000101e75a)
+* 📖 **儀表板功能詳解**：[點此閱讀文章](https://vocus.cc/article/694f88bdfd89780001042d74)
+
+---
+
+## ✨ 核心分析功能
+
+### 🌎 全球強勢股連動 (`Global_Trend.py`)
+* **跨國同步**：支援 TW, US, CN, JP, HK, KR 六大市場。
+* **AI 宏觀診斷**：自動分析全球產業資金流向與跨國聯動現象。
+
+### 🔍 個股 AI 深度掃描 (`Deep_Scan.py`)
+* **雷達圖分析**：動能、穩定度、防禦力三維評分。
+* **股性統計**：2023 至今的漲停次數、炸板率與隔日溢價期望值。
+
+### 🚀 今日漲停戰情室 (`Today_Limit_Up.py`)
+* **連板追蹤**：即時掌握市場標竿股。
+* **短線風控**：AI 針對籌碼壓力與「妖性」給予明日操作建議。
+
+### 🛡️ 風險指標診斷 (`Risk_Metrics.py`)
+* **回撤分析**：視覺化呈現 10D/20D 的拉回風險。
+* **抗跌韌性區**：篩選月報酬為正且極度穩定的避險標的。
+
+---
+
+## ⚙️ 環境變數設定
+
+請在專案中設定以下變數（`.env` 或 Streamlit Secrets）：
+
+```toml
+# 核心大腦 (必填)
+GEMINI_API_KEY = "您的_Gemini_API_Key" #
+
+# Google Drive 資料庫同步 (選配件)
+GDRIVE_SERVICE_ACCOUNT = "您的_Service_Account_JSON_內容" #
+☕ 支持贊助與免責聲明
+
+這是一個由普通上班族獨立維護的開源計畫。如果您覺得這個工具對您的投資有幫助，歡迎請我喝杯咖啡，給予我持續優化程式碼的動力！
+
+* **[👉 點此透過方格子贊助支持本專案](https://vocus.cc/pay/donate/606146a3fd89780001ba32e9?donateSourceType=article&donateSourceRefID=694f6534fd89780001f9c6ad)**
+
+---
+
+
+## 📄 免責聲明 (Disclaimer)
+
+本專案僅供研究與教育用途，所提供之數據不構成任何投資建議。投資人應自行評估風險，並對其投資結果負責。
+<img width="256" height="463" alt="image" src="https://github.com/user-attachments/assets/42ab49e7-8a56-4e9b-a196-7aee4872737c" />
+<img width="1501" height="677" alt="image" src="https://github.com/user-attachments/assets/f7b50c84-0065-48a6-9b83-5fccc25bc966" />
+<img width="1557" height="878" alt="image" src="https://github.com/user-attachments/assets/7db944ec-a24f-4c61-88fe-23e8d0b7e0c1" />
+
+
+
+
+
+
