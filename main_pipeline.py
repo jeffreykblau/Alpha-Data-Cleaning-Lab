@@ -13,8 +13,9 @@ from core_engine import AlphaCoreEngine
 
 class AlphaDataPipeline:
     def __init__(self, market_abbr):
+        # 例如傳入 "TW"，則轉換為大寫
         self.market_abbr = market_abbr.upper()
-        # 自動生成的檔名：例如 tw_stock_warehouse.db
+        # 自動生成的資料庫檔名：例如 tw_stock_warehouse.db
         self.db_name = f"{self.market_abbr.lower()}_stock_warehouse.db"
         self.creds = self._load_credentials()
         self.service = build('drive', 'v3', credentials=self.creds)
@@ -55,20 +56,19 @@ class AlphaDataPipeline:
         cursor.execute("PRAGMA table_info(cleaned_daily_base)")
         columns = [column[1] for column in cursor.fetchall()]
         
-        # 如果沒有 Ret_High 欄位，則新增
+        # 如果沒有 Ret_High 欄位，則新增 (這能解決 Deep_Scan.py 報錯問題)
         if 'Ret_High' not in columns:
             print(f"🛠️  正在為 {self.market_abbr} 資料庫新增 Ret_High 欄位...")
             try:
-                # SQLite 增加欄位語法
                 cursor.execute("ALTER TABLE cleaned_daily_base ADD COLUMN Ret_High REAL")
                 conn.commit()
-                print("✅ Ret_High 欄位新增成功")
+                print("✅ 欄位新增成功")
             except Exception as e:
-                print(f"⚠️ 欄位新增異常 (可能已存在或表格鎖定): {e}")
+                print(f"⚠️ 欄位新增異常 (可能已存在): {e}")
 
     def upload_db(self):
         file_id = self.find_file_id_by_name(self.db_name)
-        # 🚀 使用 Resumable 技術處理大檔案上傳
+        # 🚀 使用 Resumable 技術處理大檔案上傳 (解決美國市場 Timeout 問題)
         media = MediaFileUpload(self.db_name, mimetype='application/octet-stream', resumable=True)
         request = self.service.files().update(fileId=file_id, media_body=media)
         
@@ -81,30 +81,32 @@ class AlphaDataPipeline:
         print(f"✅ {self.market_abbr} 雲端同步成功")
 
     def run_process(self):
-        # 1. 下載
+        # 1. 下載雲端 DB
         self.download_db()
         
         conn = sqlite3.connect(self.db_name)
         try:
-            # 2. 自動升級資料庫結構
+            # 2. 自動升級資料庫結構 (新增炸板欄位)
             self._ensure_schema_upgraded(conn)
 
-            # 3. 執行核心運算引擎 (計算指標並填入 Ret_High)
+            # 3. 執行核心精煉引擎 (計算指標並填入 Ret_High)
             rules = MarketRuleRouter.get_rules(self.market_abbr)
             engine = AlphaCoreEngine(conn, rules, self.market_abbr)
             summary_msg = engine.execute()
             
-            # 確保寫入並關閉連線，避免上傳時檔案被佔用
+            # 重要：先關閉連線，確保檔案未被鎖定，才能順利上傳
             conn.close()
             
-            # 4. 上傳回雲端
+            # 4. 同步上傳回雲端
             self.upload_db()
             
-            # 5. 生成報告摘要
-            summary_file = f"summary_{self.market_abbr.lower()}_stock_warehouse.txt"
+            # 5. 生成摘要報告 (修正檔名以符合 YAML 的 Artifacts 搜尋路徑)
+            # 例如: summary_tw_stock_warehouse.txt
+            summary_file = f"summary_{self.db_name.replace('.db', '')}.txt"
             with open(summary_file, "w", encoding="utf-8") as f:
                 f.write(str(summary_msg))
             
+            print(f"📄 摘要報告已生成: {summary_file}")
             return summary_msg
 
         except Exception as e:
@@ -114,9 +116,10 @@ class AlphaDataPipeline:
             raise e
 
 if __name__ == "__main__":
+    # 從 GitHub Actions 的環境變數中讀取市場代號 (例如 TW)
     target_market = os.environ.get("MARKET_TYPE")
     if not target_market:
-        print("❌ 錯誤：未設定 MARKET_TYPE 環境變數")
+        print("❌ 錯誤：未設定 MARKET_TYPE")
         exit(1)
     
     pipeline = AlphaDataPipeline(target_market)
