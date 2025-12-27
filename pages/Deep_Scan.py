@@ -59,12 +59,13 @@ try:
         target_symbol = selected.split(" ")[0]
         conn = sqlite3.connect(target_db)
         
-        # --- 數據抓取邏輯 ---
+        # --- 數據抓取邏輯 (加入衝板失敗統計) ---
         scan_q = f"SELECT * FROM cleaned_daily_base WHERE StockID = '{target_symbol}' ORDER BY 日期 DESC LIMIT 1"
         data_all = pd.read_sql(scan_q, conn)
         
         hist_q = f"""
         SELECT COUNT(*) as t, SUM(is_limit_up) as lu, 
+        SUM(CASE WHEN Prev_LU = 0 AND is_limit_up = 0 AND High_Alpha > 0.095 THEN 1 ELSE 0 END) as failed_lu,
         AVG(CASE WHEN Prev_LU=1 THEN Overnight_Alpha END) as ov,
         AVG(CASE WHEN Prev_LU=1 THEN Next_1D_Max END) as nxt
         FROM cleaned_daily_base WHERE StockID = '{target_symbol}'
@@ -75,7 +76,8 @@ try:
         samples = pd.read_sql(sample_q, conn)
         
         temp_info_q = f"SELECT sector FROM stock_info WHERE symbol = '{target_symbol}'"
-        sector_name = pd.read_sql(temp_info_q, conn).iloc[0,0] if not pd.read_sql(temp_info_q, conn).empty else "未知"
+        sector_res = pd.read_sql(temp_info_q, conn)
+        sector_name = sector_res.iloc[0,0] if not sector_res.empty else "未知"
         
         peer_q = f"SELECT symbol, name FROM stock_info WHERE sector = '{sector_name}' AND symbol != '{target_symbol}' LIMIT 12"
         peers_df = pd.read_sql(peer_q, conn)
@@ -90,7 +92,6 @@ try:
             
             with col_left:
                 st.subheader("📊 多維度體質評分")
-                # 取得動能指標
                 r5 = data.get('Ret_5D', 0)
                 r20 = data.get('Ret_20D', 0)
                 r200 = data.get('Ret_200D', 0)
@@ -110,11 +111,17 @@ try:
                 st.plotly_chart(fig, use_container_width=True)
 
             with col_right:
-                st.subheader("📋 當前關鍵指標")
+                st.subheader("📋 當前行為指標")
                 st.write(f"**最新收盤**：{data['收盤']}")
                 st.write(f"**所屬產業**：{sector_name}")
+                
+                # 強調顯示漲停與炸板數據
+                m1, m2 = st.columns(2)
+                m1.metric("5年成功漲停", f"{int(hist['lu'] or 0)} 次")
+                failed_count = int(hist['failed_lu'] or 0)
+                m2.metric("衝板失敗(炸板)", f"{failed_count} 次", delta="需警惕" if failed_count > 5 else None, delta_color="inverse")
+
                 st.write(f"**20D 波動率**：{vol*100:.2f}%")
-                st.write(f"**5年漲停次數**：{int(hist['lu'] or 0)} 次")
                 st.write(f"**平均開盤溢價**：{(hist['ov'] or 0)*100:.2f}%")
                 st.write(f"**最高點期望值**：{(hist['nxt'] or 0)*100:.2f}%")
 
@@ -133,7 +140,7 @@ try:
                     )
                     st.plotly_chart(fig_hist, use_container_width=True)
                 else:
-                    st.info("該股五年內無漲停紀錄，故無隔日沖樣本。")
+                    st.info("該股五年內無漲停紀錄。")
 
             with c2:
                 st.subheader("🔗 同產業聯動 (點擊看圖)")
@@ -146,9 +153,9 @@ try:
                         linked_peers.append(f"• [{p_sym} {row['name']}]({url})")
                     st.markdown("\n".join(linked_peers))
                 else:
-                    st.write("暫無相關資料")
+                    st.write("暫無資料")
 
-            # --- 佈局三：AI 專家報告 (Python 強制連結邏輯) ---
+            # --- 佈局三：AI 專家報告 ---
             st.divider()
             if st.button("🚀 生成 AI 專家深度診斷報告"):
                 if "GEMINI_API_KEY" in st.secrets:
@@ -156,13 +163,20 @@ try:
                         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
                         model = genai.GenerativeModel('gemini-1.5-pro')
                         
-                        prompt = f"你是投研專家。分析股票 {selected}：題材、聯動性與策略。該股屬於 {sector_name} 產業。歷史漲停{int(hist['lu'])}次，溢價均值{(hist['ov'] or 0)*100:.2f}%。"
+                        prompt = f"""
+                        你是投研專家。分析股票 {selected}：
+                        - 產業：{sector_name}
+                        - 5年漲停次數：{int(hist['lu'])}
+                        - 衝板失敗(炸板)次數：{int(hist['failed_lu'])}
+                        - 隔日溢價均值：{(hist['ov'] or 0)*100:.2f}%
                         
-                        with st.spinner("AI 正在精煉數據並生成連結..."):
+                        請針對「炸板次數」與「成功漲停次數」的比例，評價該標的的「股性」與「籌碼穩定度」，並給予交易建議。
+                        """
+                        
+                        with st.spinner("AI 正在解析股性並生成報告..."):
                             response = model.generate_content(prompt)
                             raw_text = response.text
 
-                            # 🚀 健壯的 Regex 替換邏輯
                             def make_stock_link(match):
                                 symbol_full = match.group(0) 
                                 symbol_num = match.group(1)  
