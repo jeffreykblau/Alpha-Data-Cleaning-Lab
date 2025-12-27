@@ -18,14 +18,12 @@ class AlphaCoreEngine:
         except: pass
 
         # 2. 限制讀取規模：只讀取 2023-01-01 以後的數據
-        # 這是解決 GitHub Action 記憶體溢位(OOM) 與中國市場失敗的關鍵
         cutoff_date = "2023-01-01"
         query = f"SELECT * FROM cleaned_daily_base WHERE 日期 >= '{cutoff_date}'"
         
         try:
             self.df = pd.read_sql(query, self.conn)
             if self.df.empty:
-                # 保底機制：如果 2023 後沒數據，抓取最後 10 萬筆
                 print("⚠️ 2023後無數據，切換至保底模式讀取最後 10 萬筆")
                 self.df = pd.read_sql("SELECT * FROM cleaned_daily_base ORDER BY 日期 DESC LIMIT 100000", self.conn)
         except Exception as e:
@@ -51,11 +49,11 @@ class AlphaCoreEngine:
         # 6. 轉回日期字串，準備寫入
         self.df['日期'] = self.df['日期'].dt.strftime('%Y-%m-%d %H:%M:%S')
         
-        # 7. 寫回資料庫 (這裡使用 replace 會更新 2023 以後的整張表結構)
+        # 7. 寫回資料庫 (這裡使用 replace 會更新表格結構，包含新欄位 Ret_High)
         print("💾 正在寫入精煉數據...")
         self.df.to_sql("cleaned_daily_base", self.conn, if_exists="replace", index=False)
         
-        # 8. 壓縮檔案空間 (重要：防止資料庫體積持續膨脹)
+        # 8. 壓縮檔案空間
         print("🧹 執行 VACUUM 壓縮...")
         try:
             self.conn.execute("VACUUM")
@@ -64,12 +62,23 @@ class AlphaCoreEngine:
         last_date = self.df['日期'].max()
         return f"✅ {self.market_abbr} 精煉完成！最新日期：{last_date}"
 
-    # --- 以下計算邏輯維持不變 ---
+    # --- 核心計算邏輯 ---
     def calculate_returns(self):
+        # 計算前日收盤
         self.df['Prev_Close'] = self.df.groupby('StockID')['收盤'].shift(1)
+        
+        # 今日收盤漲跌幅
         self.df['Ret_Day'] = (self.df['收盤'] / self.df['Prev_Close']) - 1
+        
+        # 隔日溢價 (開盤漲跌幅)
         self.df['Overnight_Alpha'] = (self.df['開盤'] / self.df['Prev_Close']) - 1
+        
+        # 🚀 盤中最高點漲幅 (Next_1D_Max 與 Ret_High 雙存，確保 Deep_Scan.py 相容)
         self.df['Next_1D_Max'] = (self.df['最高'] / self.df['Prev_Close']) - 1
+        self.df['Ret_High'] = self.df['Next_1D_Max']
+        
+        # 新增 Prev_LU (前日是否漲停)，用於炸板判斷
+        self.df['Prev_LU'] = self.df.groupby('StockID')['is_limit_up'].shift(1).fillna(0)
 
     def calculate_rolling_returns(self):
         for d in [5, 20, 200]:
