@@ -39,14 +39,14 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy google-api-python-client google-auth python-dotenv requests google-generativeai
+          # 直接使用 requirements.txt 安裝最保險
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Run Pipeline
         env:
           GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # 提取簡稱並轉大寫
           export MARKET_TYPE=$(echo "${{ matrix.market_db }}" | cut -d'_' -f1 | tr '[:lower:]' '[:upper:]')
           echo "🚀 啟動任務: $MARKET_TYPE"
           python main_pipeline.py
@@ -74,7 +74,8 @@ jobs:
       - name: Install Dependencies for Reporter
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas
+          # Reporter 只需要這三個套件，我們強制安裝確保萬無一失
+          pip install requests python-dotenv pandas
 
       - name: Download All Summaries
         uses: actions/download-artifact@v4
@@ -88,5 +89,5 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # 進入下載資料夾確保抓得到檔案
+          # 執行報告程式
           python batch_reporter.py
