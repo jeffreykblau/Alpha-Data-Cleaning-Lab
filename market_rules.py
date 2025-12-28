@@ -34,44 +34,27 @@ class MarketRuleRouter:
             return self._apply_generic_rules(df)
 
     def _apply_taiwan_rules(self, df):
-        """
-        台灣市場：
-        - 上市/上櫃：10% 限制
-        - 興櫃：無限制 (標註強勢門檻)
-        - ETF：無限制
-        """
-        # 判定是否為 ETF (代碼 00 開頭或市場別標註)
+        """ 台灣市場：上市櫃 10%, 興櫃標註強勢 """
         is_etf = df['StockID'].str.startswith('00')
         if 'MarketType' in df.columns:
             is_etf = is_etf | (df['MarketType'] == 'ETF')
             is_rotc = df['MarketType'].isin(['興櫃', 'ROTC'])
         else:
-            is_rotc = False # 若無資訊則預設不處理興櫃
+            is_rotc = False
 
         df['is_limit_up'] = 0
-        
-        # A. 一般上市櫃漲停判定 (10% 門檻)
-        # 使用 1.095 避開除權息或計算誤差
+        # 一般上市櫃 (10% 門檻)
         mask_lu = (~is_etf) & (~is_rotc) & (df['收盤'] >= df['Prev_Close'] * 1.095)
         df.loc[mask_lu, 'is_limit_up'] = 1
         
-        # B. 興櫃強勢判定 (自定義 10% 為強勢標記，因為興櫃沒漲停)
-        # 注意：這部分在 core_engine 也有做，這裡做雙重保險
-        mask_rotc_strong = is_rotc & (df['收盤'] >= df['Prev_Close'] * 1.10)
-        df.loc[mask_rotc_strong, 'is_limit_up'] = 1
-        
-        # 設定炸板門檻標籤
         df['failed_lu_threshold'] = 0.095
-        if 'MarketType' in df.columns:
-            # 興櫃與 ETF 門檻調高，避免誤報
-            df.loc[is_rotc | is_etf, 'failed_lu_threshold'] = 0.15 
-            
         return df
 
     def _apply_us_rules(self, df):
-        """ 美國市場：無限制，15% 為強勢標記 """
-        df['is_limit_up'] = ((df['收盤'] / df['Prev_Close'] - 1) >= 0.15).astype(int)
-        df['failed_lu_threshold'] = 0.14
+        """ 美國市場：無限制，改為 10% (0.098) 作為強勢標記 """
+        # 只要漲幅超過 9.8% 即標註為 is_limit_up (10% 門檻)
+        df['is_limit_up'] = ((df['收盤'] / df['Prev_Close'] - 1) >= 0.098).astype(int)
+        df['failed_lu_threshold'] = 0.095
         return df
 
     def _apply_china_rules(self, df):
@@ -81,20 +64,17 @@ class MarketRuleRouter:
         mask_20 = is_20pct & (df['收盤'] >= df['Prev_Close'] * 1.195)
         mask_10 = (~is_20pct) & (df['收盤'] >= df['Prev_Close'] * 1.095)
         df.loc[mask_20 | mask_10, 'is_limit_up'] = 1
-        
         df['failed_lu_threshold'] = 0.095
         df.loc[is_20pct, 'failed_lu_threshold'] = 0.195
         return df
 
     def _apply_korea_rules(self, df):
-        """ 韓國市場：漲跌幅限制 30% """
-        # 韓國自 2015 年起漲停限制為 30%
         df['is_limit_up'] = (df['收盤'] >= df['Prev_Close'] * 1.295).astype(int)
         df['failed_lu_threshold'] = 0.295
         return df
 
     def _apply_generic_rules(self, df):
-        """ 通用規則 """
+        """ 通用規則：適用於 HK 或其他市場，預設 10% 為強勢標記 """
         df['is_limit_up'] = ((df['收盤'] / df['Prev_Close'] - 1) >= 0.095).astype(int)
         df['failed_lu_threshold'] = 0.095
         return df
