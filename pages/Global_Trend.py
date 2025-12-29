@@ -125,9 +125,34 @@ if available_markets:
                 use_container_width=True, hide_index=True
             )
 
-        # AI 趨勢分析
+        # AI 趨勢分析區塊
         st.divider()
-        if st.button("🤖 啟動全球產業趨勢 AI 診斷"):
+        st.subheader("🤖 全球產業趨勢 AI 診斷")
+        st.markdown("""
+        本模組將今日全球強勢股的統計數據送交 AI。您可以直接使用內建的 **Gemini 診斷**，
+        或是 **產生提問詞** 複製到 ChatGPT / Claude 等模型，觀察不同 AI 對全球資金流向的解讀。
+        """)
+
+        # 預先準備 AI 提問詞內容
+        sector_summary = global_df.groupby(['Sector', 'Market']).size().to_string()
+        trend_prompt = f"""你是一位宏觀投資專家，請分析今日全球漲幅超過10%的股票分佈：
+{sector_summary}
+
+1. 哪些產業出現跨國聯動現象？（例如：美、台、日同步大漲 AI 半導體）
+2. 這些現象背後的全球趨勢為何？（政策推動、技術突破或資金避險）
+3. 給予宏觀角度的風險與佈局建議。"""
+
+        # 按鈕佈局
+        btn_col1, btn_col2 = st.columns(2)
+        
+        with btn_col1:
+            run_ai = st.button("🚀 啟動 Gemini 全球趨勢診斷", use_container_width=True)
+        
+        with btn_col2:
+            gen_prompt = st.button("📋 產生提問詞 (詢問其他 AI)", use_container_width=True)
+
+        # 1. 執行 Gemini AI 診斷
+        if run_ai:
             api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key:
                 st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
@@ -138,26 +163,24 @@ if available_markets:
                     target_model = next((m for m in ['models/gemini-1.5-flash', 'gemini-1.5-flash'] if m in all_models), all_models[0])
                     model = genai.GenerativeModel(target_model)
                     
-                    sector_summary = global_df.groupby(['Sector', 'Market']).size().to_string()
-                    prompt = f"""你是一位宏觀投資專家，請分析今日全球漲幅超過10%的股票分佈：
-{sector_summary}
-
-1. 哪些產業出現跨國聯動現象？
-2. 這些現象背後的全球趨勢為何？
-3. 風險建議。"""
-                    
-                    with st.spinner(f"AI 正在比對全球數據 (模型: {target_model})..."):
-                        response = model.generate_content(prompt)
-                        st.info("### 🤖 全球趨勢分析報告")
+                    with st.spinner(f"AI 正在解析全球數據流向 (模型: {target_model})..."):
+                        response = model.generate_content(trend_prompt)
+                        st.info("### 🤖 Gemini 全球趨勢分析報告")
                         st.markdown(response.text)
-                        
-                        # --- 新增：提問詞複製區塊 ---
-                        st.divider()
-                        st.subheader("📋 複製提問詞 (至 ChatGPT / Claude)")
-                        st.caption("您可以複製下方指令，並將數據提供給其他 AI 進行深入交叉驗證：")
-                        st.code(prompt.strip(), language="text")
                 except Exception as e:
                     st.error(f"AI 分析失敗: {e}")
+
+        # 2. 顯示提問詞區塊
+        if gen_prompt:
+            st.success("✅ 提問詞已生成！您可以複製下方內容進行跨模型驗證。")
+            st.code(trend_prompt.strip(), language="text")
+            st.info("""
+            💡 **為什麼要使用提問詞交叉驗證？**
+            * **ChatGPT (OpenAI)**：在分析市場情緒與政策解讀上有很強的邏輯性。
+            * **Claude (Anthropic)**：擅長處理長篇統計數據並給出條理分明的產業風險評估。
+            * **Gemini (Google)**：具備強大的即時資訊處理能力與 Google 生態系的數據洞察。
+            """)
+
     else:
         st.warning("今日各國暫無漲幅 > 10% 的股票數據。")
 else:
