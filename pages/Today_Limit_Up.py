@@ -126,21 +126,16 @@ try:
             else:
                 st.caption("暫無同產業其他公司數據")
 
-            # --- 第三部分：AI 診斷 ---
+            # --- 第三部分：AI 專家診斷 (雙按鈕模式) ---
             st.divider()
-            if st.button(f"🤖 點擊讓 AI 診斷：{stock_detail['Name']}"):
-                api_key = st.secrets.get("GEMINI_API_KEY")
-                if not api_key:
-                    st.warning("⚠️ 請設定 GEMINI_API_KEY")
-                else:
-                    try:
-                        genai.configure(api_key=api_key)
-                        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                        target_model = next((m for m in ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'] if m in all_models), all_models[0])
-                        
-                        model = genai.GenerativeModel(target_model)
-                        
-                        prompt = f"""你是專業短線交易員。請分析股票 {selected_label}：
+            st.subheader(f"🤖 AI 專家診斷：{stock_detail['Name']}")
+            st.markdown("""
+            本模組結合歷史「炸板率」與「隔日溢價」進行短線勝率評估。
+            您可以啟動內建 **Gemini 診斷**，或 **產生提問詞** 複製到 ChatGPT / Claude。
+            """)
+
+            # 準備 AI 提問詞
+            expert_prompt = f"""你是專業短線交易員。請分析股票 {selected_label}：
 - 市場：{market_option} | 產業：{current_sector}
 - 今日狀態：連板第 {stock_detail['Seq_LU_Count']} 天
 - 2023至今：漲停 {int(bt['total_lu'])} 次，衝板失敗(炸板) {int(bt['total_failed'])} 次。
@@ -149,28 +144,53 @@ try:
 分析重點：
 1. 考慮到炸板次數與成功漲停的比例，該股籌碼是否穩定？
 2. 同產業板塊目前的強勢程度與續航力。
-3. 給予明日操作建議與風控。"""
+3. 給予明日操作建議與風控。""".strip()
+
+            # 按鈕佈局
+            btn_col1, btn_col2 = st.columns(2)
+            
+            with btn_col1:
+                run_ai = st.button(f"🚀 啟動 Gemini 診斷", use_container_width=True)
+            
+            with btn_col2:
+                gen_prompt = st.button(f"📋 產生提問詞 (詢問其他 AI)", use_container_width=True)
+
+            # 1. 處理 Gemini 診斷
+            if run_ai:
+                api_key = st.secrets.get("GEMINI_API_KEY")
+                if not api_key:
+                    st.warning("⚠️ 請設定 GEMINI_API_KEY")
+                else:
+                    try:
+                        genai.configure(api_key=api_key)
+                        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                        target_model = next((m for m in ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'] if m in all_models), all_models[0])
+                        model = genai.GenerativeModel(target_model)
                         
                         with st.spinner(f"AI 正在解析 (模型: {target_model})..."):
-                            response = model.generate_content(prompt)
-                            st.success(f"### 🤖 AI 診斷報告")
+                            response = model.generate_content(expert_prompt)
+                            st.success(f"### 🤖 Gemini 診斷報告")
                             st.markdown(response.text)
-                            
-                            # --- 新增：提問詞複製區塊 ---
-                            st.divider()
-                            st.subheader("📋 複製提問詞 (至 ChatGPT / Claude)")
-                            st.caption("您可以複製下方指令，並將數據提供給其他 AI 進行深入交叉驗證：")
-                            st.code(prompt.strip(), language="text")
-
                     except Exception as e:
                         st.error(f"AI 分析失敗: {e}")
+
+            # 2. 處理提問詞複製
+            if gen_prompt:
+                st.info("✅ 專業級提問詞已生成！")
+                st.code(expert_prompt, language="text")
+                st.markdown("""
+                💡 **為什麼需要跨 AI 交叉驗證？**
+                * **ChatGPT**：對市場心理的解讀非常細膩，適合分析「妖股」情緒。
+                * **Claude**：在風險控制與止損點的邏輯推演上更為嚴謹。
+                * **策略建議**：如果不同 AI 都建議「隔日沖溢價風險高」，則明日開盤應以減碼為主。
+                """)
 
 except Exception as e:
     st.error(f"錯誤: {e}")
 finally:
     conn.close()
 
-# --- 4. 底部導覽列 (新增功能) ---
+# --- 4. 底部導覽列 ---
 st.divider()
 st.markdown("### 🔗 快速資源連結")
 col_link1, col_link2, col_link3 = st.columns(3)
