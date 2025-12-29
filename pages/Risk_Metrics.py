@@ -76,14 +76,47 @@ try:
     # --- 區塊三：行業風險分析 ---
     st.divider()
     st.subheader("🏘️ 行業平均波動與回撤")
+    
     sector_risk = df.groupby('Sector')[['volatility_20d', 'drawdown_after_high_20d']].mean().reset_index()
     fig_sec = px.bar(sector_risk, x='Sector', y='volatility_20d', color='drawdown_after_high_20d',
                     title="各行業平均波動率 (顏色深淺代表平均回撤幅度)")
     st.plotly_chart(fig_sec, use_container_width=True)
 
-    # --- 區塊四：AI 風險診斷 (新增功能) ---
+    # --- 區塊四：AI 風險診斷 (新增雙按鈕功能) ---
     st.divider()
-    if st.button(f"🤖 啟動 {market_option} 市場整體風險 AI 診斷"):
+    st.subheader("🤖 市場風險 AI 診斷系統")
+    st.markdown(f"""
+    本模組會根據 **{market_option}** 市場的平均波動率、回撤深度與高風險行業進行分析。
+    您可以選擇內建的 **Gemini 專家診斷**，或 **產生提問詞** 複製到 ChatGPT / Claude 進行交叉驗證。
+    """)
+
+    # 準備風險數據摘要
+    avg_vol = df['volatility_20d'].mean()
+    avg_dd = df['drawdown_after_high_20d'].mean()
+    high_risk_sectors = sector_risk.sort_values('volatility_20d', ascending=False).head(3)['Sector'].tolist()
+    
+    risk_prompt = f"""你是一位資深風險管理專家。請分析 {market_option} 市場目前的風險指標：
+當前市場數據摘要：
+- 平均 20 日波動率：{avg_vol*100:.2f}%
+- 平均 20 日最大回撤：{avg_dd*100:.2f}%
+- 高波動風險行業：{", ".join(high_risk_sectors)}
+
+請根據以上數據進行診斷：
+1. 目前市場整體的穩定度如何？是否存在系統性風險拉回的跡象？
+2. 針對高波動行業，投資者應如何設置保護性止損？
+3. 從「抗跌韌性區」的表現來看，目前資金偏好哪種類型的避險標的？""".strip()
+
+    # 按鈕佈局
+    btn_col1, btn_col2 = st.columns(2)
+    
+    with btn_col1:
+        run_ai = st.button(f"🚀 啟動 Gemini 風險診斷", use_container_width=True)
+    
+    with btn_col2:
+        gen_prompt = st.button(f"📋 產生提問詞 (詢問其他 AI)", use_container_width=True)
+
+    # 1. 處理內建 AI 診斷
+    if run_ai:
         api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key:
             st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
@@ -94,36 +127,25 @@ try:
                 target_model = next((m for m in ['models/gemini-1.5-flash', 'gemini-1.5-flash'] if m in all_models), all_models[0])
                 model = genai.GenerativeModel(target_model)
                 
-                # 準備風險數據摘要
-                avg_vol = df['volatility_20d'].mean()
-                avg_dd = df['drawdown_after_high_20d'].mean()
-                high_risk_sectors = sector_risk.sort_values('volatility_20d', ascending=False).head(3)['Sector'].tolist()
-                
-                prompt = f"""你是一位資深風險管理專家。請分析 {market_option} 市場目前的風險指標：
-當前市場數據摘要：
-- 平均 20 日波動率：{avg_vol*100:.2f}%
-- 平均 20 日最大回撤：{avg_dd*100:.2f}%
-- 高波動風險行業：{", ".join(high_risk_sectors)}
-
-請根據以上數據進行診斷：
-1. 目前市場整體的穩定度如何？是否存在系統性風險拉回的跡象？
-2. 針對高波動行業，投資者應如何設置保護性止損？
-3. 從「抗跌韌性區」的表現來看，目前資金偏好哪種類型的避險標的？"""
-                
-                with st.spinner(f"AI 正在進行風險診斷 (模型: {target_model})..."):
-                    response = model.generate_content(prompt)
+                with st.spinner(f"AI 正在評估市場風險 (模型: {target_model})..."):
+                    response = model.generate_content(risk_prompt)
                     st.info("### 🤖 市場風險 AI 診斷報告")
                     st.markdown(response.text)
-                    
-                    # 提問詞複製區塊
-                    st.divider()
-                    st.subheader("📋 複製提問詞 (至 ChatGPT / Claude)")
-                    st.caption("您可以複製下方指令，並將數據提供給其他 AI 進行交叉驗證：")
-                    st.code(prompt.strip(), language="text")
             except Exception as e:
                 st.error(f"AI 分析失敗: {e}")
 
-    # --- 區塊五：個股風險深度診斷 ---
+    # 2. 處理提問詞顯示
+    if gen_prompt:
+        st.success("✅ 風險診斷提問詞已生成！")
+        st.code(risk_prompt, language="text")
+        st.info("""
+        💡 **交叉驗證建議：**
+        * **ChatGPT (OpenAI)**：擅長解讀波動率背後的市場心理與宏觀情緒。
+        * **Claude (Anthropic)**：在風險規避策略與防守型資產配置的邏輯推演上非常嚴謹。
+        * **對比點**：觀察不同模型對「高波動行業」的止損建議是否一致，若皆建議減碼，則應嚴格執行風控。
+        """)
+
+    # --- 區塊五：個股風險深度查詢 ---
     st.divider()
     st.subheader("🔍 個股風險深度查詢")
     selected = st.selectbox("選擇股票查看風險數據", options=(df['StockID'] + " " + df['Name']).tolist())
