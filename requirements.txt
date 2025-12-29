@@ -13,5 +13,5 @@ google-generativeai
 # 其他通訊與環境工具
 requests
 python-dotenv
-
+tabulate
 
