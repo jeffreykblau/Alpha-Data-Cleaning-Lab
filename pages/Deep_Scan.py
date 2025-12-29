@@ -128,22 +128,15 @@ try:
                     links = [f"[{row['symbol']}]({current_url_base.replace('{s}', row['symbol'].split('.')[0])})" for _, row in peers_df.iterrows()]
                     st.caption(" ".join(links))
 
-            # --- AI 深度診斷 ---
+            # --- AI 深度診斷區塊 ---
             st.divider()
-            if st.button(f"🚀 詢問 AI 專家深度判斷：{selected}"):
-                api_key = st.secrets.get("GEMINI_API_KEY")
-                if not api_key:
-                    st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
-                else:
-                    try:
-                        genai.configure(api_key=api_key)
-                        
-                        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                        target_model = next((m for m in ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'] if m in all_models), all_models[0])
-                        
-                        model = genai.GenerativeModel(target_model)
-                        
-                        prompt = f"""
+            st.subheader("🤖 AI 專家決策系統")
+            st.markdown("""
+            您可以選擇直接啟動內建的 **Gemini 專家分析**，或者 **產生提問詞** 複製到 ChatGPT / Claude 等其他 AI 模型進行交叉驗證。
+            """)
+
+            # 預先格式化提示詞內容
+            expert_prompt = f"""
 你是資深交易專家。請針對股票 {selected} 進行診斷：
 數據指標 (2023至今)：
 - 成功漲停：{int(hist['lu'])} 次
@@ -152,22 +145,42 @@ try:
 - 20日波動率：{vol*100:.2f}%
 
 請結合「炸板率」與「波動率」分析該股的籌碼壓力與妖性，判斷適不適合隔日沖，並給予短線風控建議。
-                        """
+            """.strip()
+
+            # 按鈕欄位配置
+            btn_col1, btn_col2 = st.columns(2)
+            
+            with btn_col1:
+                run_ai = st.button(f"🚀 啟動 Gemini 深度診斷", use_container_width=True)
+            
+            with btn_col2:
+                gen_prompt = st.button(f"📋 產生提問詞 (詢問其他 AI)", use_container_width=True)
+
+            # 1. 處理內建 AI 診斷
+            if run_ai:
+                api_key = st.secrets.get("GEMINI_API_KEY")
+                if not api_key:
+                    st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
+                else:
+                    try:
+                        genai.configure(api_key=api_key)
+                        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                        target_model = next((m for m in ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'] if m in all_models), all_models[0])
+                        model = genai.GenerativeModel(target_model)
                         
                         with st.spinner(f"AI 正在解析 (模型: {target_model})..."):
-                            response = model.generate_content(prompt)
-                            st.info("### 🤖 AI 專家診斷報告")
+                            response = model.generate_content(expert_prompt)
+                            st.info("### 🤖 Gemini 專家診斷報告")
                             st.markdown(response.text)
-                            
-                            # --- 新增：提問詞複製區塊 ---
-                            st.divider()
-                            st.subheader("📋 複製提問詞 (至 ChatGPT / Claude)")
-                            st.caption("如果您想使用其他 AI 模型進行交叉驗證，可以複製下方指令：")
-                            st.code(prompt.strip(), language="text")
-
                     except Exception as e:
                         st.error(f"AI 分析失敗: {e}")
-            
+
+            # 2. 處理提問詞產生
+            if gen_prompt:
+                st.success("✅ 提問詞已生成！您可以複製下方內容至 ChatGPT 或 Claude。")
+                st.code(expert_prompt, language="text")
+                st.info("💡 **為什麼要交叉驗證？** 不同的 AI 模型（如 GPT-4 或 Claude 3.5）對波動率與炸板率的解讀可能會有細微差別，多方參考有助於過濾雜訊。")
+
 except Exception as e:
     st.error(f"系統異常: {e}")
 
