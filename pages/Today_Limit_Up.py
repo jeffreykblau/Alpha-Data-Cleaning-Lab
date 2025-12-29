@@ -68,6 +68,17 @@ if not os.path.exists(target_db):
 
 conn = sqlite3.connect(target_db)
 
+# --- 3. 檢查資料庫結構的輔助函數 ---
+def get_table_columns(table_name):
+    """獲取資料表的欄位名稱"""
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [col[1] for col in cursor.fetchall()]
+        return columns
+    except:
+        return []
+
 try:
     # A. 獲取最新交易日
     latest_date = pd.read_sql("SELECT MAX(日期) FROM cleaned_daily_base", conn).iloc[0, 0]
@@ -228,17 +239,52 @@ try:
             target_id = selected_label.split(" ")[0]
             stock_detail = df_today[df_today['StockID'] == target_id].iloc[0]
 
-            # 聚合查詢
+            # 先檢查資料庫有哪些欄位
+            table_columns = get_table_columns("cleaned_daily_base")
+            
+            # 根據實際欄位調整查詢
+            available_columns = ", ".join(table_columns) if table_columns else "*"
+            
+            # 建構安全的查詢 - 檢查每個欄位是否存在
+            select_parts = []
+            
+            # 這些是我們需要的欄位
+            desired_columns = [
+                "is_limit_up", 
+                "Ret_High", 
+                "Prev_LU", 
+                "Overnight_Alpha", 
+                "Next_1D_Max"
+            ]
+            
+            # 檢查哪些欄位存在
+            existing_columns = [col for col in desired_columns if col in table_columns]
+            
+            # 建立查詢
+            select_parts = [
+                "SUM(is_limit_up) as total_lu",
+                "SUM(CASE WHEN is_limit_up = 0 AND Ret_High > 0.095 THEN 1 ELSE 0 END) as total_failed"
+            ]
+            
+            if "Prev_LU" in table_columns and "Overnight_Alpha" in table_columns:
+                select_parts.append("AVG(CASE WHEN Prev_LU = 1 THEN Overnight_Alpha END) as avg_open")
+            
+            if "Prev_LU" in table_columns and "Next_1D_Max" in table_columns:
+                select_parts.append("AVG(CASE WHEN Prev_LU = 1 THEN Next_1D_Max END) as avg_max")
+            
+            # 檢查是否有Next_1D_Ret欄位
+            if "Next_1D_Ret" in table_columns and "Prev_LU" in table_columns:
+                select_parts.append("AVG(CASE WHEN Prev_LU = 1 AND Next_1D_Ret < 0 THEN 1 ELSE 0 END) as next_day_loss_rate")
+            
+            select_query = ", ".join(select_parts)
+            
+            # 執行查詢
             backtest_q = f"""
-            SELECT  
-                SUM(is_limit_up) as total_lu,  
-                SUM(CASE WHEN is_limit_up = 0 AND Ret_High > 0.095 THEN 1 ELSE 0 END) as total_failed,
-                AVG(CASE WHEN Prev_LU = 1 THEN Overnight_Alpha END) as avg_open,
-                AVG(CASE WHEN Prev_LU = 1 THEN Next_1D_Max END) as avg_max,
-                AVG(CASE WHEN Prev_LU = 1 AND Next_1D_Ret < 0 THEN 1 ELSE 0 END) as next_day_loss_rate
+            SELECT {select_query}
             FROM cleaned_daily_base  
             WHERE StockID = '{target_id}'
             """
+            
             bt = pd.read_sql(backtest_q, conn).iloc[0]
             
             # 獲取歷史連板記錄
@@ -256,9 +302,17 @@ try:
             m1.metric("今日狀態", f"{stock_detail['Seq_LU_Count']} 連板")
             m2.metric("2023至今漲停", f"{int(bt['total_lu'] or 0)} 次")
             m3.metric("2023至今炸板", f"{int(bt['total_failed'] or 0)} 次", delta_color="inverse")
-            next_loss_rate = (bt['next_day_loss_rate'] or 0) * 100
-            m4.metric("隔日下跌機率", f"{next_loss_rate:.1f}%", 
-                     delta=f"溢價: {(bt['avg_open'] or 0)*100:.1f}%")
+            
+            # 檢查是否有next_day_loss_rate欄位
+            if 'next_day_loss_rate' in bt:
+                next_loss_rate = (bt['next_day_loss_rate'] or 0) * 100
+                m4.metric("隔日下跌機率", f"{next_loss_rate:.1f}%", 
+                         delta=f"溢價: {(bt['avg_open'] or 0)*100:.1f}%")
+            elif 'avg_max' in bt:
+                m4.metric("隔日最大溢價", f"{(bt['avg_max'] or 0)*100:.2f}%",
+                         delta=f"開盤: {(bt.get('avg_open', 0) or 0)*100:.1f}%" if 'avg_open' in bt else None)
+            else:
+                m4.metric("隔日開盤溢價", f"{(bt.get('avg_open', 0) or 0)*100:.2f}%")
             
             # 💡 同族群聯動
             current_sector = stock_detail['Sector']
@@ -323,6 +377,20 @@ try:
             st.subheader(f"🤖 AI 專家診斷：{stock_detail['Name']}")
             
             # 自動生成個股AI提示詞（無需按鈕）
+            # 準備統計數據文字
+            stats_text = f"""
+## 歷史統計數據
+- 2023至今：漲停 {int(bt['total_lu'])} 次，衝板失敗(炸板) {int(bt['total_failed'])} 次。"""
+            
+            if 'avg_open' in bt:
+                stats_text += f"\n- 隔日開盤溢價期望：{(bt['avg_open'] or 0)*100:.2f}%"
+            
+            if 'avg_max' in bt:
+                stats_text += f"\n- 隔日最高溢價期望：{(bt['avg_max'] or 0)*100:.2f}%"
+            
+            if 'next_day_loss_rate' in bt:
+                stats_text += f"\n- 隔日下跌機率：{(bt['next_day_loss_rate'] or 0)*100:.1f}%"
+            
             expert_prompt = f"""你是專業短線交易員。請深度分析股票 {selected_label}：
 
 ## 基本資料
@@ -330,11 +398,7 @@ try:
 - 今日狀態：連板第 {stock_detail['Seq_LU_Count']} 天
 - 今日漲幅：{stock_detail['Ret_Day']*100:.2f}%
 
-## 歷史統計數據
-- 2023至今：漲停 {int(bt['total_lu'])} 次，衝板失敗(炸板) {int(bt['total_failed'])} 次。
-- 隔日開盤溢價期望：{(bt['avg_open'] or 0)*100:.2f}%
-- 隔日最高溢價期望：{(bt['avg_max'] or 0)*100:.2f}%
-- 隔日下跌機率：{next_loss_rate:.1f}%
+{stats_text}
 
 ## 近期歷史漲停記錄
 {history_df.to_markdown(index=False) if not history_df.empty else '無近期歷史記錄'}
@@ -488,8 +552,31 @@ try:
 
 except Exception as e:
     st.error(f"錯誤: {e}")
+    # 顯示詳細的錯誤資訊（僅在開發時使用）
+    st.info("除錯資訊：")
+    st.write(f"資料庫檔案：{target_db}")
+    st.write(f"資料庫存在：{os.path.exists(target_db)}")
+    
+    # 嘗試顯示資料庫結構
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = cursor.fetchall()
+        st.write(f"資料庫中的表格：{tables}")
+        
+        if tables:
+            for table in tables:
+                table_name = table[0]
+                cursor.execute(f"PRAGMA table_info({table_name})")
+                columns = cursor.fetchall()
+                st.write(f"表格 {table_name} 的欄位：")
+                for col in columns:
+                    st.write(f"  - {col[1]} ({col[2]})")
+    except:
+        pass
 finally:
-    conn.close()
+    if 'conn' in locals():
+        conn.close()
 
 # --- 4. 底部導覽列 ---
 st.divider()
