@@ -93,23 +93,18 @@ try:
 
     # --- 5. AI 週期動能診斷 (新增功能) ---
     st.divider()
-    if st.button(f"🤖 啟動 {market_option} 市場週期動能 AI 診斷"):
-        api_key = st.secrets.get("GEMINI_API_KEY")
-        if not api_key:
-            st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
-        else:
-            try:
-                genai.configure(api_key=api_key)
-                all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                target_model = next((m for m in ['models/gemini-1.5-flash', 'gemini-1.5-flash'] if m in all_models), all_models[0])
-                model = genai.GenerativeModel(target_model)
-                
-                # 準備市場分佈摘要給 AI
-                bin_summary = df['Bin'].value_counts().to_string()
-                avg_ret_5d = df['Ret_5D'].mean() * 100
-                avg_ret_20d = df['Ret_20D'].mean() * 100
-                
-                prompt = f"""你是一位資深量化分析師。請分析 {market_option} 市場目前的週期動能分佈：
+    st.subheader("🤖 市場週期動能 AI 診斷")
+    st.markdown(f"""
+    本模組分析 **{market_option}** 市場的整體健康度。您可以直接啟動內建的 **Gemini 專家分析**，
+    或點擊 **產生提問詞** 複製到 ChatGPT / Claude，透過不同 AI 模型的量化視角進行交叉比對。
+    """)
+    
+    # 準備市場分佈摘要給 AI
+    bin_summary = df['Bin'].value_counts().to_string()
+    avg_ret_5d = df['Ret_5D'].mean() * 100
+    avg_ret_20d = df['Ret_20D'].mean() * 100
+    
+    prompt_text = f"""你是一位資深量化分析師。請分析 {market_option} 市場目前的週期動能分佈：
 市場分佈摘要 (本月累積漲跌幅分箱)：
 {bin_summary}
 
@@ -120,20 +115,46 @@ try:
 請根據以上數據：
 1. 判斷目前市場處於「過熱」、「健康」還是「低迷」狀態？
 2. 針對「妖股」與「噴發」箱體內的個股，給予目前的風險評估。
-3. 給予短中線的操作建議。"""
+3. 給予短中線的操作建議。""".strip()
+
+    # 按鈕佈局
+    btn_col1, btn_col2 = st.columns(2)
+    
+    with btn_col1:
+        run_ai = st.button(f"🚀 啟動 Gemini 市場診斷", use_container_width=True)
+    
+    with btn_col2:
+        gen_prompt = st.button(f"📋 產生提問詞 (詢問其他 AI)", use_container_width=True)
+
+    # 1. 執行 Gemini AI 診斷
+    if run_ai:
+        api_key = st.secrets.get("GEMINI_API_KEY")
+        if not api_key:
+            st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
+        else:
+            try:
+                genai.configure(api_key=api_key)
+                all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                target_model = next((m for m in ['models/gemini-1.5-flash', 'gemini-1.5-flash'] if m in all_models), all_models[0])
+                model = genai.GenerativeModel(target_model)
                 
                 with st.spinner(f"AI 正在解析市場動能 (模型: {target_model})..."):
-                    response = model.generate_content(prompt)
+                    response = model.generate_content(prompt_text)
                     st.info("### 🤖 市場週期動能 AI 診斷報告")
                     st.markdown(response.text)
-                    
-                    # 提問詞複製區
-                    st.divider()
-                    st.subheader("📋 複製提問詞 (至 ChatGPT / Claude)")
-                    st.caption("您可以複製下方指令，並將數據提供給其他 AI 進行交叉驗證：")
-                    st.code(prompt.strip(), language="text")
             except Exception as e:
                 st.error(f"AI 分析失敗: {e}")
+
+    # 2. 顯示提問詞區塊
+    if gen_prompt:
+        st.success("✅ 提問詞已生成！您可以複製下方內容進行跨模型驗證。")
+        st.code(prompt_text, language="text")
+        st.info("""
+        💡 **為什麼要補提問詞？**
+        * **ChatGPT (OpenAI)**：對宏觀經濟趨勢的解讀較為廣泛，適合用於判斷市場狀態。
+        * **Claude (Anthropic)**：在風險控管與分箱數據的邏輯推理上表現極佳，適合尋找操作建議。
+        * **交叉驗證**：若多個模型均指出市場「過熱」，則應提高警覺增加現金比例。
+        """)
 
 except Exception as e:
     st.error(f"圖表生成失敗: {e}")
