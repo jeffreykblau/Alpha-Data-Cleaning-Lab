@@ -60,6 +60,11 @@ st.warning("💡 **操作提醒：** 切換市場時，請在側邊欄選取。�
 
 # --- 4. 市場切換邏輯 ---
 market_option = st.sidebar.selectbox("🚩 核心市場選擇", ("TW", "JP", "CN", "US", "HK", "KR"))
+# --- 在這裡加入清除快取按鈕 ---
+if st.sidebar.button("🧹 清除快取並強制更新"):
+    st.cache_data.clear()
+    st.rerun()
+# --------------------------
 db_map = {"TW":"tw_stock_warehouse.db", "JP":"jp_stock_warehouse.db", "CN":"cn_stock_warehouse.db", 
           "US":"us_stock_warehouse.db", "HK":"hk_stock_warehouse.db", "KR":"kr_stock_warehouse.db"}
 target_db = db_map[market_option]
