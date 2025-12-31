@@ -4,9 +4,19 @@ import pandas as pd
 import plotly.express as px
 import google.generativeai as genai
 import os
+import urllib.parse
 
 # 1. 頁面配置
 st.set_page_config(page_title="風險指標深度掃描", layout="wide")
+
+# 自訂樣式 (整合美化風格)
+st.markdown("""
+    <style>
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #f0f2f6; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+    .ai-section { background-color: #f8f9fa; padding: 20px; border-radius: 15px; border-left: 8px solid #ff4b4b; box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
+    .password-protected { border: 2px solid #ff6b6b; border-radius: 8px; padding: 15px; background-color: #fff5f5; }
+    </style>
+""", unsafe_allow_html=True)
 
 # 2. 超連結函數
 def get_market_link(symbol, market):
@@ -16,6 +26,11 @@ def get_market_link(symbol, market):
 
 # 3. 讀取資料庫
 market_option = st.sidebar.selectbox("🚩 選擇市場", ("TW", "JP", "CN", "US", "HK", "KR"), key="risk_market")
+
+# 授權狀態初始化
+if 'gemini_authorized' not in st.session_state:
+    st.session_state.gemini_authorized = False
+
 db_map = {"TW":"tw_stock_warehouse.db", "JP":"jp_stock_warehouse.db", "CN":"cn_stock_warehouse.db", 
           "US":"us_stock_warehouse.db", "HK":"hk_stock_warehouse.db", "KR":"kr_stock_warehouse.db"}
 target_db = db_map[market_option]
@@ -82,12 +97,11 @@ try:
                     title="各行業平均波動率 (顏色深淺代表平均回撤幅度)")
     st.plotly_chart(fig_sec, use_container_width=True)
 
-    # --- 區塊四：AI 風險診斷 (新增雙按鈕功能) ---
+    # --- 區塊四：AI 風險診斷 (升級版四按鈕模式) ---
     st.divider()
-    st.subheader("🤖 市場風險 AI 診斷系統")
+    st.subheader("🤖 市場風險 AI 專家診斷系統")
     st.markdown(f"""
-    本模組會根據 **{market_option}** 市場的平均波動率、回撤深度與高風險行業進行分析。
-    您可以選擇內建的 **Gemini 專家診斷**，或 **產生提問詞** 複製到 ChatGPT / Claude 進行交叉驗證。
+    本模組根據 **{market_option}** 市場的平均數據進行診斷。您可以展開提示詞查看數據，或使用按鈕將指令帶入各 AI 平台進行交叉驗證。
     """)
 
     # 準備風險數據摘要
@@ -95,7 +109,7 @@ try:
     avg_dd = df['drawdown_after_high_20d'].mean()
     high_risk_sectors = sector_risk.sort_values('volatility_20d', ascending=False).head(3)['Sector'].tolist()
     
-    risk_prompt = f"""你是一位資深風險管理專家。請分析 {market_option} 市場目前的風險指標：
+    risk_prompt = f"""你是一位資深風險 management 專家。請分析 {market_option} 市場目前的風險指標：
 當前市場數據摘要：
 - 平均 20 日波動率：{avg_vol*100:.2f}%
 - 平均 20 日最大回撤：{avg_dd*100:.2f}%
@@ -106,44 +120,92 @@ try:
 2. 針對高波動行業，投資者應如何設置保護性止損？
 3. 從「抗跌韌性區」的表現來看，目前資金偏好哪種類型的避險標的？""".strip()
 
-    # 按鈕佈局
-    btn_col1, btn_col2 = st.columns(2)
-    
-    with btn_col1:
-        run_ai = st.button(f"🚀 啟動 Gemini 風險診斷", use_container_width=True)
-    
-    with btn_col2:
-        gen_prompt = st.button(f"📋 產生提問詞 (詢問其他 AI)", use_container_width=True)
-
-    # 1. 處理內建 AI 診斷
-    if run_ai:
-        api_key = st.secrets.get("GEMINI_API_KEY")
-        if not api_key:
-            st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
-        else:
-            try:
-                genai.configure(api_key=api_key)
-                all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                target_model = next((m for m in ['models/gemini-1.5-flash', 'gemini-1.5-flash'] if m in all_models), all_models[0])
-                model = genai.GenerativeModel(target_model)
-                
-                with st.spinner(f"AI 正在評估市場風險 (模型: {target_model})..."):
-                    response = model.generate_content(risk_prompt)
-                    st.info("### 🤖 市場風險 AI 診斷報告")
-                    st.markdown(response.text)
-            except Exception as e:
-                st.error(f"AI 分析失敗: {e}")
-
-    # 2. 處理提問詞顯示
-    if gen_prompt:
-        st.success("✅ 風險診斷提問詞已生成！")
+    # 顯示提示詞 (預設展開)
+    with st.expander("📋 查看完整市場風險分析提示詞", expanded=True):
         st.code(risk_prompt, language="text")
-        st.info("""
-        💡 **交叉驗證建議：**
-        * **ChatGPT (OpenAI)**：擅長解讀波動率背後的市場心理與宏觀情緒。
-        * **Claude (Anthropic)**：在風險規避策略與防守型資產配置的邏輯推演上非常嚴謹。
-        * **對比點**：觀察不同模型對「高波動行業」的止損建議是否一致，若皆建議減碼，則應嚴格執行風控。
-        """)
+
+    # 四按鈕佈局
+    col_ai1, col_ai2, col_ai3, col_ai4 = st.columns(4)
+    
+    with col_ai1:
+        # ChatGPT 一鍵帶入
+        encoded_prompt = urllib.parse.quote(risk_prompt)
+        st.link_button(
+            "🔥 ChatGPT 分析",
+            f"https://chatgpt.com/?q={encoded_prompt}",
+            use_container_width=True,
+            help="自動在 ChatGPT 中打開風險分析"
+        )
+    
+    with col_ai2:
+        st.link_button(
+            "🔍 DeepSeek 分析",
+            "https://chat.deepseek.com/",
+            use_container_width=True,
+            help="手動複製上方提示詞貼到 DeepSeek"
+        )
+    
+    with col_ai3:
+        st.link_button(
+            "📘 Claude 分析",
+            "https://claude.ai/",
+            use_container_width=True,
+            help="手動複製上方提示詞貼到 Claude"
+        )
+    
+    with col_ai4:
+        # Gemini 內建診斷 (密碼保護)
+        if st.session_state.gemini_authorized:
+            if st.button("🤖 Gemini 診斷", use_container_width=True, type="primary"):
+                api_key = st.secrets.get("GEMINI_API_KEY")
+                if not api_key:
+                    st.warning("⚠️ 請先在 Secrets 中設定 GEMINI_API_KEY")
+                else:
+                    try:
+                        genai.configure(api_key=api_key)
+                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        with st.spinner("AI 正在評估市場風險..."):
+                            response = model.generate_content(risk_prompt)
+                            st.session_state.market_risk_report = response.text
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"AI 分析失敗: {e}")
+        else:
+            # 未授權顯示解鎖介面
+            st.markdown('<div class="password-protected">', unsafe_allow_html=True)
+            st.caption("🔒 Gemini 需授權")
+            auth_pw = st.text_input("密碼：", type="password", key="risk_auth_pw", label_visibility="collapsed")
+            if st.button("解鎖並分析", key="risk_auth_btn"):
+                if auth_pw == st.secrets.get("AI_ASK_PASSWORD", "default_password"):
+                    st.session_state.gemini_authorized = True
+                    st.rerun()
+                else:
+                    st.error("密碼錯誤")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    # 顯示 Gemini 報告
+    if 'market_risk_report' in st.session_state:
+        st.divider()
+        st.markdown(f"### 🤖 Gemini 市場風險診斷報告")
+        st.markdown(f"""
+            <div class="ai-section">
+                {st.session_state.market_risk_report.replace('\\n', '<br>')}
+            </div>
+        """, unsafe_allow_html=True)
+        
+        c_dl, c_cl = st.columns(2)
+        with c_dl:
+            st.download_button(
+                label="📥 下載診斷報告 (.md)",
+                data=st.session_state.market_risk_report.encode('utf-8'),
+                file_name=f"Market_Risk_Report_{market_option}.md",
+                mime="text/markdown",
+                use_container_width=True
+            )
+        with c_cl:
+            if st.button("🗑️ 清除報告", use_container_width=True):
+                del st.session_state.market_risk_report
+                st.rerun()
 
     # --- 區塊五：個股風險深度查詢 ---
     st.divider()
