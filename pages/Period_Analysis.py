@@ -4,9 +4,19 @@ import pandas as pd
 import plotly.express as px
 import google.generativeai as genai
 import os
+import urllib.parse
 
 # 1. 頁面配置
 st.set_page_config(page_title="長周期與滾動漲跌分析", layout="wide")
+
+# 自訂樣式
+st.markdown("""
+    <style>
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #f0f2f6; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+    .ai-section { background-color: #f8f9fa; padding: 20px; border-radius: 15px; border-left: 8px solid #28a745; box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
+    .password-protected { border: 2px solid #ff6b6b; border-radius: 8px; padding: 15px; background-color: #fff5f5; }
+    </style>
+""", unsafe_allow_html=True)
 
 # 2. 共用函數：取得市場專屬超連結
 def get_market_link(symbol, market):
@@ -23,6 +33,11 @@ def get_market_link(symbol, market):
 
 # 3. 讀取資料庫
 market_option = st.sidebar.selectbox("🚩 選擇市場", ("TW", "JP", "CN", "US", "HK", "KR"), key="period_market")
+
+# 授權狀態初始化
+if 'gemini_authorized' not in st.session_state:
+    st.session_state.gemini_authorized = False
+
 db_map = {"TW":"tw_stock_warehouse.db", "JP":"jp_stock_warehouse.db", "CN":"cn_stock_warehouse.db", 
           "US":"us_stock_warehouse.db", "HK":"hk_stock_warehouse.db", "KR":"kr_stock_warehouse.db"}
 target_db = db_map[market_option]
@@ -91,12 +106,11 @@ try:
             else:
                 st.write("目前無符合條件的股票")
 
-    # --- 5. AI 週期動能診斷 (新增功能) ---
+    # --- 5. AI 週期動能診斷 (升級版四按鈕) ---
     st.divider()
-    st.subheader("🤖 市場週期動能 AI 診斷")
+    st.subheader("🤖 市場週期動能 AI 專家診斷")
     st.markdown(f"""
-    本模組分析 **{market_option}** 市場的整體健康度。您可以直接啟動內建的 **Gemini 專家分析**，
-    或點擊 **產生提問詞** 複製到 ChatGPT / Claude，透過不同 AI 模型的量化視角進行交叉比對。
+    本模組分析 **{market_option}** 市場的整體健康度。您可以展開提示詞查看數據，或使用一鍵按鈕將指令帶入各 AI 平台。
     """)
     
     # 準備市場分佈摘要給 AI
@@ -117,44 +131,92 @@ try:
 2. 針對「妖股」與「噴發」箱體內的個股，給予目前的風險評估。
 3. 給予短中線的操作建議。""".strip()
 
-    # 按鈕佈局
-    btn_col1, btn_col2 = st.columns(2)
-    
-    with btn_col1:
-        run_ai = st.button(f"🚀 啟動 Gemini 市場診斷", use_container_width=True)
-    
-    with btn_col2:
-        gen_prompt = st.button(f"📋 產生提問詞 (詢問其他 AI)", use_container_width=True)
-
-    # 1. 執行 Gemini AI 診斷
-    if run_ai:
-        api_key = st.secrets.get("GEMINI_API_KEY")
-        if not api_key:
-            st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
-        else:
-            try:
-                genai.configure(api_key=api_key)
-                all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                target_model = next((m for m in ['models/gemini-1.5-flash', 'gemini-1.5-flash'] if m in all_models), all_models[0])
-                model = genai.GenerativeModel(target_model)
-                
-                with st.spinner(f"AI 正在解析市場動能 (模型: {target_model})..."):
-                    response = model.generate_content(prompt_text)
-                    st.info("### 🤖 市場週期動能 AI 診斷報告")
-                    st.markdown(response.text)
-            except Exception as e:
-                st.error(f"AI 分析失敗: {e}")
-
-    # 2. 顯示提問詞區塊
-    if gen_prompt:
-        st.success("✅ 提問詞已生成！您可以複製下方內容進行跨模型驗證。")
+    # 顯示提示詞 (預設展開)
+    with st.expander("📋 查看完整市場動能分析提示詞", expanded=True):
         st.code(prompt_text, language="text")
-        st.info("""
-        💡 **為什麼要補提問詞？**
-        * **ChatGPT (OpenAI)**：對宏觀經濟趨勢的解讀較為廣泛，適合用於判斷市場狀態。
-        * **Claude (Anthropic)**：在風險控管與分箱數據的邏輯推理上表現極佳，適合尋找操作建議。
-        * **交叉驗證**：若多個模型均指出市場「過熱」，則應提高警覺增加現金比例。
-        """)
+
+    # 四按鈕佈局
+    col_ai1, col_ai2, col_ai3, col_ai4 = st.columns(4)
+    
+    with col_ai1:
+        # ChatGPT一鍵帶入
+        encoded_prompt = urllib.parse.quote(prompt_text)
+        st.link_button(
+            "🔥 ChatGPT 分析",
+            f"https://chatgpt.com/?q={encoded_prompt}",
+            use_container_width=True,
+            help="自動在ChatGPT中打開分析"
+        )
+    
+    with col_ai2:
+        st.link_button(
+            "🔍 DeepSeek 分析",
+            "https://chat.deepseek.com/",
+            use_container_width=True,
+            help="手動複製上方提示詞貼到DeepSeek"
+        )
+    
+    with col_ai3:
+        st.link_button(
+            "📘 Claude 分析",
+            "https://claude.ai/",
+            use_container_width=True,
+            help="手動複製上方提示詞貼到Claude"
+        )
+    
+    with col_ai4:
+        # Gemini內建診斷（密碼保護）
+        if st.session_state.gemini_authorized:
+            if st.button("🤖 Gemini 診斷", use_container_width=True, type="primary"):
+                api_key = st.secrets.get("GEMINI_API_KEY")
+                if not api_key:
+                    st.warning("⚠️ 請在 Secrets 中設定 GEMINI_API_KEY")
+                else:
+                    try:
+                        genai.configure(api_key=api_key)
+                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        with st.spinner("AI 正在解析市場動能..."):
+                            response = model.generate_content(prompt_text)
+                            st.session_state.market_period_report = response.text
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"AI 分析失敗: {e}")
+        else:
+            # 未授權顯示解鎖介面
+            st.markdown('<div class="password-protected">', unsafe_allow_html=True)
+            st.caption("🔒 Gemini 需授權")
+            auth_pw = st.text_input("密碼：", type="password", key="period_auth_pw", label_visibility="collapsed")
+            if st.button("解鎖並分析", key="period_auth_btn"):
+                if auth_pw == st.secrets.get("AI_ASK_PASSWORD", "default_password"):
+                    st.session_state.gemini_authorized = True
+                    st.rerun()
+                else:
+                    st.error("密碼錯誤")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    # 顯示 Gemini 報告
+    if 'market_period_report' in st.session_state:
+        st.divider()
+        st.markdown(f"### 🤖 Gemini 市場動能診斷報告")
+        st.markdown(f"""
+            <div class="ai-section">
+                {st.session_state.market_period_report.replace('\\n', '<br>')}
+            </div>
+        """, unsafe_allow_html=True)
+        
+        c_dl, c_cl = st.columns(2)
+        with c_dl:
+            st.download_button(
+                label="📥 下載診斷報告 (.md)",
+                data=st.session_state.market_period_report.encode('utf-8'),
+                file_name=f"Market_Period_Report_{market_option}.md",
+                mime="text/markdown",
+                use_container_width=True
+            )
+        with c_cl:
+            if st.button("🗑️ 清除報告", use_container_width=True):
+                del st.session_state.market_period_report
+                st.rerun()
 
 except Exception as e:
     st.error(f"圖表生成失敗: {e}")
