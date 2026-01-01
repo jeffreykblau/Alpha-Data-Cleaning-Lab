@@ -9,7 +9,7 @@ google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
 google-auth
-google-generativeai
+google-genai
 # 其他通訊與環境工具
 requests
 python-dotenv
