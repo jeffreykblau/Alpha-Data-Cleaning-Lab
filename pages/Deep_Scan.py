@@ -3,7 +3,7 @@ import sqlite3
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-import google.generativeai as genai
+import google.genai as genai
 import os
 
 # 1. 頁面配置

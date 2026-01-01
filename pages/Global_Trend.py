@@ -8,7 +8,7 @@ import json
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2.service_account import Credentials
-import google.generativeai as genai
+import google.genai as genai
 
 # --- 1. 頁面配置 ---
 st.set_page_config(page_title="全球強勢股產業連動監測", layout="wide")

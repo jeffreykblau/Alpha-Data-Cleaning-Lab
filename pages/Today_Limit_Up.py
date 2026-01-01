@@ -2,7 +2,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import plotly.express as px
-import google.generativeai as genai
+import google.genai as genai
 import os
 import urllib.parse
 
