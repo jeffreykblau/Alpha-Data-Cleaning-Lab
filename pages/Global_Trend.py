@@ -5,6 +5,7 @@ import plotly.express as px
 import os
 import io
 import json
+import urllib.parse
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2.service_account import Credentials
@@ -16,6 +17,15 @@ st.set_page_config(page_title="全球強勢股產業連動監測", layout="wide"
 st.title("🌎 全球強勢股產業連動監測")
 st.caption("同步追蹤六大市場漲幅 > 10% 之個股，偵測全球產業資金流向")
 
+# 自訂樣式
+st.markdown("""
+    <style>
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #f0f2f6; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+    .ai-section { background-color: #f8f9fa; padding: 20px; border-radius: 15px; border-left: 8px solid #28a745; box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
+    .password-protected { border: 2px solid #ff6b6b; border-radius: 8px; padding: 15px; background-color: #fff5f5; }
+    </style>
+""", unsafe_allow_html=True)
+
 # --- 2. 市場與資料庫設定 ---
 db_config = {
 #    "TW": "tw_stock_warehouse.db",
@@ -25,6 +35,10 @@ db_config = {
     "HK": "hk_stock_warehouse.db",
 #    "KR": "kr_stock_warehouse.db"
 }
+
+# 授權狀態初始化
+if 'gemini_authorized' not in st.session_state:
+    st.session_state.gemini_authorized = False
 
 # --- 3. 自動下載邏輯 ---
 def download_missing_dbs():
@@ -66,6 +80,24 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
     
+    st.divider()
+    
+    # 授權設定
+    st.subheader("🔐 AI 授權設定")
+    if not st.session_state.gemini_authorized:
+        password_input = st.text_input("授權密碼：", type="password", key="sidebar_pw")
+        if st.button("🔓 授權解鎖", use_container_width=True):
+            if password_input == st.secrets.get("AI_ASK_PASSWORD", "default_password"):
+                st.session_state.gemini_authorized = True
+                st.rerun()
+            else:
+                st.error("❌ 密碼錯誤")
+    else:
+        st.success("✅ Gemini 已授權")
+        if st.button("🔒 撤銷授權"):
+            st.session_state.gemini_authorized = False
+            st.rerun()
+
     st.divider()
     st.write("📁 本地檔案狀態：")
     available_markets = []
@@ -126,61 +158,113 @@ if available_markets:
                 use_container_width=True, hide_index=True
             )
 
-        # AI 趨勢分析區塊
+        # --- AI 趨勢分析區塊 (升級版) ---
         st.divider()
-        st.subheader("🤖 全球產業趨勢 AI 診斷")
+        st.subheader("🤖 全球產業趨勢 AI 專家診斷")
         st.markdown("""
-        本模組將今日全球強勢股的統計數據送交 AI。您可以直接使用內建的 **Gemini 診斷**，
-        或是 **產生提問詞** 複製到 ChatGPT / Claude 等模型，觀察不同 AI 對全球資金流向的解讀。
+        本模組分析今日全球市場資金流向。您可以直接展開提示詞查看數據，或使用一鍵按鈕將指令帶入各 AI 平台。
         """)
 
         # 預先準備 AI 提問詞內容
         sector_summary = global_df.groupby(['Sector', 'Market']).size().to_string()
-        trend_prompt = f"""你是一位宏觀投資專家，請分析今日全球漲幅超過10%的股票分佈：
+        trend_prompt = f"""你是一位宏觀投資專家，請分析今日全球漲幅超過10%的股票分佈數據：
+
 {sector_summary}
 
-1. 哪些產業出現跨國聯動現象？（例如：美、台、日同步大漲 AI 半導體）
-2. 這些現象背後的全球趨勢為何？（政策推動、技術突破或資金避險）
-3. 給予宏觀角度的風險與佈局建議。"""
+## 分析任務：
+1. **產業跨國聯動**：哪些產業出現跨國聯動現象？（例如：美、台、日同步大漲 AI 半導體）
+2. **全球趨勢解讀**：這些現象背後的驅動力為何？（政策推動、技術突破或資金避險）
+3. **投資佈局建議**：給予宏觀角度的風險評估與後續佈局策略。
 
-        # 按鈕佈局
-        btn_col1, btn_col2 = st.columns(2)
-        
-        with btn_col1:
-            run_ai = st.button("🚀 啟動 Gemini 全球趨勢診斷", use_container_width=True)
-        
-        with btn_col2:
-            gen_prompt = st.button("📋 產生提問詞 (詢問其他 AI)", use_container_width=True)
+請提供專業、具備前瞻性的分析建議。"""
 
-        # 1. 執行 Gemini AI 診斷
-        if run_ai:
-            api_key = st.secrets.get("GEMINI_API_KEY")
-            if not api_key:
-                st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
-            else:
-                try:
-                    genai.configure(api_key=api_key)
-                    all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                    target_model = next((m for m in ['models/gemini-1.5-flash', 'gemini-1.5-flash'] if m in all_models), all_models[0])
-                    model = genai.GenerativeModel(target_model)
-                    
-                    with st.spinner(f"AI 正在解析全球數據流向 (模型: {target_model})..."):
-                        response = model.generate_content(trend_prompt)
-                        st.info("### 🤖 Gemini 全球趨勢分析報告")
-                        st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"AI 分析失敗: {e}")
-
-        # 2. 顯示提問詞區塊
-        if gen_prompt:
-            st.success("✅ 提問詞已生成！您可以複製下方內容進行跨模型驗證。")
+        # 顯示提示詞 (預設展開)
+        with st.expander("📋 查看完整全球趨勢 AI 分析提示詞", expanded=True):
             st.code(trend_prompt.strip(), language="text")
-            st.info("""
-            💡 **為什麼要使用提問詞交叉驗證？**
-            * **ChatGPT (OpenAI)**：在分析市場情緒與政策解讀上有很強的邏輯性。
-            * **Claude (Anthropic)**：擅長處理長篇統計數據並給出條理分明的產業風險評估。
-            * **Gemini (Google)**：具備強大的即時資訊處理能力與 Google 生態系的數據洞察。
-            """)
+
+        # 四按鈕佈局
+        col_ai1, col_ai2, col_ai3, col_ai4 = st.columns(4)
+        
+        with col_ai1:
+            # ChatGPT 一鍵帶入
+            encoded_prompt = urllib.parse.quote(trend_prompt.strip())
+            st.link_button(
+                "🔥 ChatGPT 分析",
+                f"https://chatgpt.com/?q={encoded_prompt}",
+                use_container_width=True,
+                help="自動在 ChatGPT 中開啟全球趨勢分析"
+            )
+        
+        with col_ai2:
+            st.link_button(
+                "🔍 DeepSeek 分析",
+                "https://chat.deepseek.com/",
+                use_container_width=True,
+                help="手動複製上方提示詞貼到 DeepSeek"
+            )
+        
+        with col_ai3:
+            st.link_button(
+                "📘 Claude 分析",
+                "https://claude.ai/",
+                use_container_width=True,
+                help="手動複製上方提示詞貼到 Claude"
+            )
+        
+        with col_ai4:
+            # Gemini 內建診斷 (密碼保護)
+            if st.session_state.gemini_authorized:
+                if st.button("🚀 Gemini 診斷", use_container_width=True, type="primary"):
+                    api_key = st.secrets.get("GEMINI_API_KEY")
+                    if not api_key:
+                        st.warning("⚠️ 請先設定 GEMINI_API_KEY")
+                    else:
+                        try:
+                            genai.configure(api_key=api_key)
+                            model = genai.GenerativeModel('gemini-1.5-flash')
+                            with st.spinner("Gemini 正在解析全球趨勢..."):
+                                response = model.generate_content(trend_prompt)
+                                st.session_state.global_trend_report = response.text
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"AI 分析失敗: {e}")
+            else:
+                # 未授權顯示解鎖提示
+                st.markdown('<div class="password-protected">', unsafe_allow_html=True)
+                st.caption("🔒 Gemini 需授權")
+                auth_pw = st.text_input("密碼：", type="password", key="global_auth_pw", label_visibility="collapsed")
+                if st.button("解鎖並分析", key="global_auth_btn"):
+                    if auth_pw == st.secrets.get("AI_ASK_PASSWORD", "default_password"):
+                        st.session_state.gemini_authorized = True
+                        st.rerun()
+                    else:
+                        st.error("密碼錯誤")
+                st.markdown('</div>', unsafe_allow_html=True)
+
+        # 顯示 Gemini 報告
+        if 'global_trend_report' in st.session_state:
+            st.divider()
+            st.markdown("### 🤖 Gemini 全球趨勢分析報告")
+            
+            st.markdown(f"""
+                <div class="ai-section">
+                    {st.session_state.global_trend_report.replace('\\n', '<br>')}
+                </div>
+            """, unsafe_allow_html=True)
+            
+            c_dl, c_cl = st.columns(2)
+            with c_dl:
+                st.download_button(
+                    label="📥 下載趨勢報告 (.md)",
+                    data=st.session_state.global_trend_report.encode('utf-8'),
+                    file_name="Global_Trend_Report.md",
+                    mime="text/markdown",
+                    use_container_width=True
+                )
+            with c_cl:
+                if st.button("🗑️ 清除報告", use_container_width=True):
+                    del st.session_state.global_trend_report
+                    st.rerun()
 
     else:
         st.warning("今日各國暫無漲幅 > 10% 的股票數據。")

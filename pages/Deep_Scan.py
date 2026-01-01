@@ -5,16 +5,27 @@ import plotly.graph_objects as go
 import plotly.express as px
 import google.genai as genai
 import os
+import urllib.parse
 
 # 1. 頁面配置
 st.set_page_config(page_title="AI 綜合個股深度掃描", layout="wide")
 
-# 2. 市場資料庫配置
+# 自訂樣式 (從您的參考程式碼整合)
+st.markdown("""
+    <style>
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #f0f2f6; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+    .ai-section { background-color: #f8f9fa; padding: 20px; border-radius: 15px; border-left: 8px solid #28a745; box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
+    .password-protected { border: 2px solid #ff6b6b; border-radius: 8px; padding: 15px; background-color: #fff5f5; }
+    </style>
+""", unsafe_allow_html=True)
+
+# 2. 市場資料庫配置與快取清除按鈕
 market_option = st.sidebar.selectbox("🚩 選擇市場", ("TW", "JP", "CN", "US", "HK", "KR"), key="scan_market")
-# --- 在這裡加入清除快取按鈕 ---
+
 if st.sidebar.button("🧹 清除快取並強制更新"):
     st.cache_data.clear()
     st.rerun()
+
 db_map = {
     "TW": "tw_stock_warehouse.db", 
     "JP": "jp_stock_warehouse.db", 
@@ -38,6 +49,10 @@ current_url_base = url_templates.get(market_option, "https://google.com/search?q
 if not os.path.exists(target_db):
     st.error(f"請先回到首頁同步 {market_option} 數據庫")
     st.stop()
+
+# 授權狀態初始化
+if 'gemini_authorized' not in st.session_state:
+    st.session_state.gemini_authorized = False
 
 @st.cache_data
 def get_full_stock_info(_db_path):
@@ -81,6 +96,9 @@ try:
         
         peer_q = f"SELECT symbol, name FROM stock_info WHERE sector = '{sector_name}' AND symbol != '{target_symbol}' LIMIT 8"
         peers_df = pd.read_sql(peer_q, conn)
+        
+        # 抓取最新日期用於報告
+        latest_date = data_all['日期'].iloc[0] if not data_all.empty else "N/A"
         conn.close()
 
         if not data_all.empty:
@@ -132,63 +150,125 @@ try:
                     links = [f"[{row['symbol']}]({current_url_base.replace('{s}', row['symbol'].split('.')[0])})" for _, row in peers_df.iterrows()]
                     st.caption(" ".join(links))
 
-            # --- AI 深度診斷區塊 ---
+            # --- 🤖 AI 專家診斷系統 (整合四按鈕模式) ---
             st.divider()
-            st.subheader("🤖 AI 專家決策系統")
-            st.markdown("""
-            您可以選擇直接啟動內建的 **Gemini 專家分析**，或者 **產生提問詞** 複製到 ChatGPT / Claude 等其他 AI 模型進行交叉驗證。
-            """)
-
-            # 預先格式化提示詞內容
-            expert_prompt = f"""
-你是資深交易專家。請針對股票 {selected} 進行診斷：
-數據指標 (2023至今)：
-- 成功漲停：{int(hist['lu'])} 次
-- 炸板次數：{int(hist['failed_lu'])} 次
-- 隔日溢價期望值：{(hist['ov'] or 0)*100:.2f}%
-- 20日波動率：{vol*100:.2f}%
-
-請結合「炸板率」與「波動率」分析該股的籌碼壓力與妖性，判斷適不適合隔日沖，並給予短線風控建議。
-            """.strip()
-
-            # 按鈕欄位配置
-            btn_col1, btn_col2 = st.columns(2)
+            st.subheader(f"🤖 AI 專家診斷：{selected}")
             
-            with btn_col1:
-                run_ai = st.button(f"🚀 啟動 Gemini 深度診斷", use_container_width=True)
-            
-            with btn_col2:
-                gen_prompt = st.button(f"📋 產生提問詞 (詢問其他 AI)", use_container_width=True)
+            # 生成提示詞
+            expert_prompt = f"""你是專業短線交易員。請深度分析股票 {selected}：
+分析基準日：{latest_date}
 
-            # 1. 處理內建 AI 診斷
-            if run_ai:
-                api_key = st.secrets.get("GEMINI_API_KEY")
-                if not api_key:
-                    st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
-                else:
-                    try:
-                        genai.configure(api_key=api_key)
-                        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                        target_model = next((m for m in ['models/gemini-1.5-pro', 'models/gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'] if m in all_models), all_models[0])
-                        model = genai.GenerativeModel(target_model)
-                        
-                        with st.spinner(f"AI 正在解析 (模型: {target_model})..."):
-                            response = model.generate_content(expert_prompt)
-                            st.info("### 🤖 Gemini 專家診斷報告")
-                            st.markdown(response.text)
-                    except Exception as e:
-                        st.error(f"AI 分析失敗: {e}")
+## 數據指標 (2023 至今)
+- 成功漲停次數：{int(hist['lu'] or 0)} 次
+- 衝板失敗(炸板)次數：{int(hist['failed_lu'] or 0)} 次
+- 漲停隔日溢價期望值：{(hist['ov'] or 0)*100:.2f}%
+- 當前 20 日波動率：{vol*100:.2f}%
+- 當前 20 日最大回撤：{dd*100:.2f}%
+- 所屬產業：{sector_name}
 
-            # 2. 處理提問詞產生
-            if gen_prompt:
-                st.success("✅ 提問詞已生成！您可以複製下方內容至 ChatGPT 或 Claude。")
+## 分析任務
+1. **籌碼與妖性**：結合「炸板率」與「波動率」分析該股籌碼壓力。
+2. **隔日沖策略**：基於溢價期望值判斷是否適合隔日短進短出。
+3. **風控建議**：給予具體的停損位建議與持倉風險提示。
+
+請提供量化、具體且可執行的分析建議。"""
+
+            # 顯示提示詞 (預設開啟，如需隱藏可改為 expanded=False)
+            with st.expander("📋 查看完整AI分析提示詞", expanded=True):
                 st.code(expert_prompt, language="text")
-                st.info("💡 **為什麼要交叉驗證？** 不同的 AI 模型（如 GPT-4 或 Claude 3.5）對波動率與炸板率的解讀可能會有細微差別，多方參考有助於過濾雜訊。")
+            
+            # AI 平台按鈕佈局
+            col_ai1, col_ai2, col_ai3, col_ai4 = st.columns(4)
+            
+            with col_ai1:
+                # ChatGPT一鍵帶入
+                encoded_prompt = urllib.parse.quote(expert_prompt)
+                st.link_button(
+                    "🔥 ChatGPT 分析",
+                    f"https://chatgpt.com/?q={encoded_prompt}",
+                    use_container_width=True,
+                    help="自動在ChatGPT中打開此股票分析"
+                )
+            
+            with col_ai2:
+                st.link_button(
+                    "🔍 DeepSeek 分析",
+                    "https://chat.deepseek.com/",
+                    use_container_width=True,
+                    help="請複製上方提示詞貼到DeepSeek"
+                )
+            
+            with col_ai3:
+                st.link_button(
+                    "📘 Claude 分析",
+                    "https://claude.ai/",
+                    use_container_width=True,
+                    help="請複製上方提示詞貼到Claude"
+                )
+            
+            with col_ai4:
+                # Gemini 內建診斷 (密碼保護)
+                if st.session_state.gemini_authorized:
+                    if st.button("🤖 Gemini 分析", use_container_width=True, type="primary"):
+                        api_key = st.secrets.get("GEMINI_API_KEY")
+                        if not api_key:
+                            st.warning("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY")
+                        else:
+                            try:
+                                genai.configure(api_key=api_key)
+                                model = genai.GenerativeModel('gemini-1.5-flash')
+                                with st.spinner("Gemini 正在分析中..."):
+                                    response = model.generate_content(expert_prompt)
+                                    if response:
+                                        st.session_state.gemini_stock_report = response.text
+                                        st.rerun()
+                            except Exception as e:
+                                st.error(f"AI 分析失敗: {e}")
+                else:
+                    st.markdown('<div class="password-protected">', unsafe_allow_html=True)
+                    st.info("🔒 Gemini 需授權")
+                    auth_pw = st.text_input("密碼：", type="password", key="stock_auth_pw")
+                    if st.button("解鎖", key="stock_auth_btn"):
+                        if auth_pw == st.secrets.get("AI_ASK_PASSWORD", "default_password"):
+                            st.session_state.gemini_authorized = True
+                            st.rerun()
+                        else:
+                            st.error("密碼錯誤")
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+            # --- Gemini 報告顯示區塊 ---
+            if 'gemini_stock_report' in st.session_state:
+                st.divider()
+                st.markdown(f"### 🤖 Gemini 專家診斷報告：{selected}")
+                ai_res = st.session_state.gemini_stock_report
+                
+                # 使用 HTML 渲染精美報告框
+                st.markdown(f"""
+                    <div class="ai-section">
+                        {ai_res.replace('\\n', '<br>')}
+                    </div>
+                """, unsafe_allow_html=True)
+
+                report_md = f"# {selected} AI分析報告\n\n日期：{latest_date}\n\n{ai_res}"
+                
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.download_button(
+                        label="📥 下載報告 (.md)",
+                        data=report_md.encode('utf-8'),
+                        file_name=f"{target_symbol}_AI_Report.md",
+                        mime="text/markdown",
+                        use_container_width=True
+                    )
+                with c2:
+                    if st.button("🗑️ 清除此報告", use_container_width=True):
+                        del st.session_state.gemini_stock_report
+                        st.rerun()
 
 except Exception as e:
     st.error(f"系統異常: {e}")
 
-# --- 3. 底部快速連結 (Footer) ---
+# --- 底部快速連結 (Footer) ---
 st.divider()
 st.markdown("### 🔗 快速資源連結")
 col_link1, col_link2, col_link3 = st.columns(3)
