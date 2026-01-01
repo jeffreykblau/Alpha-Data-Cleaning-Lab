@@ -18,12 +18,12 @@ st.caption("同步追蹤六大市場漲幅 > 10% 之個股，偵測全球產業�
 
 # --- 2. 市場與資料庫設定 ---
 db_config = {
-    "TW": "tw_stock_warehouse.db",
-    "US": "us_stock_warehouse.db",
-    "CN": "cn_stock_warehouse.db",
-    "JP": "jp_stock_warehouse.db",
+#    "TW": "tw_stock_warehouse.db",
+#    "US": "us_stock_warehouse.db",
+ #   "CN": "cn_stock_warehouse.db",
+#    "JP": "jp_stock_warehouse.db",
     "HK": "hk_stock_warehouse.db",
-    "KR": "kr_stock_warehouse.db"
+#    "KR": "kr_stock_warehouse.db"
 }
 
 # --- 3. 自動下載邏輯 ---
