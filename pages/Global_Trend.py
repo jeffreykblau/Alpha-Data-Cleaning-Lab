@@ -61,6 +61,7 @@ def download_missing_dbs():
 with st.sidebar:
     st.header("⚙️ 數據管理")
     if st.button("🚀 一鍵同步六國資料庫"):
+        st.info("開始同步資料庫，請稍候...")
         download_missing_dbs()
         st.cache_data.clear()
         st.rerun()
