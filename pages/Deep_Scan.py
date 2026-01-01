@@ -11,6 +11,10 @@ st.set_page_config(page_title="AI 綜合個股深度掃描", layout="wide")
 
 # 2. 市場資料庫配置
 market_option = st.sidebar.selectbox("🚩 選擇市場", ("TW", "JP", "CN", "US", "HK", "KR"), key="scan_market")
+# --- 在這裡加入清除快取按鈕 ---
+if st.sidebar.button("🧹 清除快取並強制更新"):
+    st.cache_data.clear()
+    st.rerun()
 db_map = {
     "TW": "tw_stock_warehouse.db", 
     "JP": "jp_stock_warehouse.db", 
